@@ -9,3 +9,5 @@ hierarchy/bin/*.bin
 # ONNX models — too large for git
 no_hierarchy/models/*.onnx
 hierarchy/models/*.onnx
+no_hierarchy/models/*.onnx.data
+hierarchy/models/*.onnx.data

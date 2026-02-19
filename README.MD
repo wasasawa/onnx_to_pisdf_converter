@@ -33,7 +33,7 @@ Converts ONNX neural network models to PiSDF format. Hierarchial version not rea
 │   │       └── loadWeights.c
 │   ├── models/             # Put your .onnx models here
 │   ├── bin/                # Generated weights.bin
-│   └── output_graphs/      # Generated XML output
+│   └── output_graphs/      # Generated .pi output
 │
 └── README.md
 ```

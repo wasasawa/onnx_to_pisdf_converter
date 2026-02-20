@@ -41,6 +41,7 @@ class OpType(Enum):
     LOAD_INPUT = auto()
     LOAD_WEIGHTS = auto()
     SPLIT_WEIGHTS = auto()
+    BROADCAST = auto()
     OUTPUT = auto()
 
 
@@ -100,9 +101,40 @@ OPTYPE_TO_PI = {
     OpType.LOAD_INPUT: "",
     OpType.LOAD_WEIGHTS: "",
     OpType.SPLIT_WEIGHTS: "",
+    OpType.BROADCAST: "",
     OpType.OUTPUT: "",
 }
 
+OPTYPE_TO_H = {
+    OpType.RELU: "Code/include/relu.h",
+    OpType.SIGMOID: "Code/include/sigmoid.h",
+    OpType.TANH: "Code/include/tanh.h",
+    OpType.DROPOUT: "Code/include/dropout.h",
+    
+    OpType.ADD_SAME: "Code/include/add_same.h",
+    OpType.ADD_BIAS: "Code/include/add_bias.h",
+    OpType.ADD_SCALAR: "Code/include/add_scalar.h",
+    OpType.ADD_GENERIC: "Code/include/add_generic.h",
+    
+    OpType.CONV2D: "Code/include/conv2d.h",
+    OpType.CONV2D_BIAS: "Code/include/conv2d_bias.h",
+    OpType.MAXPOOL2D: "Code/include/maxpool2d.h",
+    OpType.AVGPOOL2D: "Code/include/avgpool2d.h",
+    OpType.GLOBAL_AVGPOOL: "Code/include/global_avgpool.h",
+    
+    OpType.MATMUL: "Code/include/matmul.h",
+    OpType.SOFTMAX: "Code/include/softmax.h",
+    
+    OpType.RESHAPE: "Code/include/reshape.h",
+    OpType.FLATTEN: "Code/include/flatten.h",
+    OpType.CONCAT: "Code/include/concat.h",
+    
+    OpType.LOAD_INPUT: "",
+    OpType.LOAD_WEIGHTS: "",
+    OpType.SPLIT_WEIGHTS: "",
+    OpType.BROADCAST: "",
+    OpType.OUTPUT: "",
+}
 
 # =============================================================================
 # DATA CLASSES
@@ -259,7 +291,7 @@ class IRGraph:
             op_type=op_type,
             index=index,
             unique_name=unique_name,
-            source=OPTYPE_TO_PI.get(op_type, "")
+            source=OPTYPE_TO_H.get(op_type, "")
         )
         self._actors[unique_name] = actor
         return actor

@@ -250,7 +250,7 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     return params
 
 
-def fill_IRGraph(model_data, shapes):
+def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
     graph = IRGraph(model_data["name"])
 
     # Create all the tensors from shape inference
@@ -323,8 +323,19 @@ def fill_IRGraph(model_data, shapes):
             ir_param = graph.get_or_create_param(param_name, value)
             actor.add_param(param_name, ir_param)
         #actor.source = get_pi_file_for_actor(actor) 
-        actor.source = "Code/include/test.h"
+        # actor.source = "Code/include/test.h"
+    # ===============================================================================================
+    # I/O Actors | load_weights and split_weights & fork actors for weights (one per dtype section)
+    # ===============================================================================================
+    add_io_actors(graph, model_data)
 
+    add_weight_fork_actors(graph, model_data, offset_map)
+
+    add_load_weights_actors(graph, offset_map)
+    # =========================================================================
+    # Detect and add BROADCAST actors for tensors with multiple consumers
+    # =========================================================================     
+    add_broadcast_actors(graph)
     return graph
 
 def add_io_actors(graph: IRGraph, model_data: dict):
@@ -452,10 +463,78 @@ def add_load_weights_actors(graph: IRGraph, offset_map: dict):
                     if tensor.name == section_tensor.name:
                         graph.link(section_tensor, load.get_port("output"), port)
 
+def add_broadcast_actors(graph: IRGraph):
+    """
+    For each tensor that has multiple consumers,
+    insert a BROADCAST actor between producer and consumers.
+    """
+
+    # We copy the list because we will modify graph.tensors during iteration
+    original_tensors = graph.tensors
+
+    for tensor in original_tensors:
+
+        # Only data tensors (skip weights or internal)
+        if tensor.isWeight:
+            continue
+
+        if tensor.producer is None:
+            continue
+
+        if len(tensor.consumers) <= 1:
+            continue
+
+        # -----------------------------------------------------
+        # Create BROADCAST actor
+        # -----------------------------------------------------
+        bcast_actor = graph.create_actor(OpType.BROADCAST, f"broadcast")
+
+        # -----------------------------------------------------
+        # Create input tensor for broadcast (same shape/dtype)
+        # -----------------------------------------------------
+        in_tensor = graph.get_or_create_tensor(
+            f"{tensor.name}_to_broadcast",
+            tensor.shape,
+            tensor.dtype
+        )
+
+        # Input port
+        bcast_in_port = bcast_actor.add_input("input", in_tensor)
+
+        # Rewire producer → broadcast
+        graph.link(in_tensor, tensor.producer, bcast_in_port)
+
+        # -----------------------------------------------------
+        # For each consumer, create one output
+        # -----------------------------------------------------
+        old_consumers = list(tensor.consumers)
+        tensor.consumers.clear()
+
+        for idx, consumer_port in enumerate(old_consumers):
+
+            # Create output tensor per consumer
+            out_tensor = graph.get_or_create_tensor(
+                f"{tensor.name}_bcast_{idx}",
+                tensor.shape,
+                tensor.dtype
+            )
+
+            out_port = bcast_actor.add_output(f"output_{idx}", out_tensor)
+
+            # Link broadcast → consumer
+            graph.link(out_tensor, out_port, consumer_port)
+
+        # --------------------------------------------
+        # Remove old tensor completely
+        # --------------------------------------------
+        del graph._tensors[tensor.name]
+
 def _generate_actor_node(graph_el, actor: IRActor):
 
     if actor.op_type == OpType.SPLIT_WEIGHTS:
         kind = "fork"
+    elif actor.op_type == OpType.BROADCAST:
+        kind = "broadcast"
     else:
         kind = "actor"
     actor_el = SubElement(graph_el, "node", attrib={
@@ -561,7 +640,6 @@ def generate_xml(graph: IRGraph, model_data) -> str:
     graph_el0 = SubElement(graph_el, "data", attrib={
         "key":"name"
     })
-    add_io_actors(graph, model_data) 
     # -------------------------------------------------------------------------
     # Parameters (config nodes)
     # -------------------------------------------------------------------------
@@ -576,87 +654,7 @@ def generate_xml(graph: IRGraph, model_data) -> str:
     # I/O Actors
     # -------------------------------------------------------------------------
    
-
-    '''
-    actor = SubElement(graph_el, "node", attrib={
-        "id": "LoadInput",
-        "kind": "actor",
-        "period": "0"
-    })
-    
-    SubElement(actor, "data", attrib={"key": "graph_desc"}).text = "Code/incldue/loadInput.h"
-    
-    loop = SubElement(actor, "loop", attrib={"name": "LoadInput"})
-
-    SubElement(loop, "param", attrib={
-        "direction": "IN",
-        "isConfig": "true",
-        "name": "InputSize",
-        "type": "int",
-    })
-
-    SubElement(loop, "param", attrib={
-        "direction": "OUT",
-        "isConfig": "false",
-        "name": "output",
-        "type": [graph.get_tensor(inp["name"]) for inp in model_data["inputs"]][0].dtype 
-    })
-
-    SubElement(actor, "port", attrib={
-        "kind":       "cfg_input",
-        "name":       "InputSize",
-        "annotation": "NONE",
-    })
-
-    SubElement(actor, "port", attrib={
-        "kind":       "output",
-        "name":       "output",
-        "expr":       "InputSize",
-        "annotation": "NONE",
-    })   
-
-    
-    # -------------------------------------------------------------------------
-    # Output Actor
-    # -------------------------------------------------------------------------
-    
-    actor = SubElement(graph_el, "node", attrib={
-        "id": "Output",
-        "kind": "actor",
-        "period": "0"
-    })
-    
-    SubElement(actor, "data", attrib={"key": "graph_desc"}).text = "Code/incldue/Output.h"
-    
-    loop = SubElement(actor, "loop", attrib={"name": "Output"})
-
-    SubElement(loop, "param", attrib={
-        "direction": "IN",
-        "isConfig": "true",
-        "name": "OutputSize",
-        "type": "int",
-    })
-
-    SubElement(loop, "param", attrib={
-        "direction": "IN",
-        "isConfig": "false",
-        "name": "input",
-        "type": [graph.get_tensor(out["name"]) for out in model_data["outputs"]][0].dtype 
-    })
-
-    SubElement(actor, "port", attrib={
-        "kind":       "cfg_input",
-        "name":       "OutputSize",
-        "annotation": "NONE",
-    })
-
-    SubElement(actor, "port", attrib={
-        "kind":       "input",
-        "name":       "input",
-        "expr":       "OutSize",
-        "annotation": "NONE",
-    })    
-    '''
+    # add_io_actors(graph, model_data) 
     # -------------------------------------------------------------------------
     # Actors (computation nodes)
     # -------------------------------------------------------------------------

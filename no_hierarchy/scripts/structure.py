@@ -31,19 +31,22 @@ class OpType(Enum):
     # Linear
     MATMUL = auto()
     SOFTMAX = auto()
+    GEMM = auto()
     
     # Shape
     RESHAPE = auto()
     FLATTEN = auto()
     CONCAT = auto()
-    
-    # IO (special actors in top-level graph)
+    TRANSPOSE = auto()   
+   
+   # IO (special actors in top-level graph)
     LOAD_INPUT = auto()
     LOAD_WEIGHTS = auto()
     SPLIT_WEIGHTS = auto()
     BROADCAST = auto()
     OUTPUT = auto()
 
+    CONSTANT_FILL = auto()
 
 class PortDir(Enum):
     IN = auto()
@@ -67,11 +70,12 @@ ONNX_TO_OPTYPE = {
     "averagepool": OpType.AVGPOOL2D,
     "globalaveragepool": OpType.GLOBAL_AVGPOOL,
     "matmul": OpType.MATMUL,
-    "gemm": OpType.MATMUL,
+    "gemm": OpType.GEMM,
     "softmax": OpType.SOFTMAX,
     "reshape": OpType.RESHAPE,
     "flatten": OpType.FLATTEN,
     "concat": OpType.CONCAT,
+    "transpose": OpType.TRANSPOSE,
 }
 
 OPTYPE_TO_PI = {
@@ -97,12 +101,15 @@ OPTYPE_TO_PI = {
     OpType.RESHAPE: "Algo/reshape.pi",
     OpType.FLATTEN: "Algo/flatten.pi",
     OpType.CONCAT: "Algo/concat.pi",
+    OpType.TRANSPOSE: "Code/include/transpose.h", 
     
+
     OpType.LOAD_INPUT: "",
     OpType.LOAD_WEIGHTS: "",
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
     OpType.OUTPUT: "",
+
 }
 
 OPTYPE_TO_H = {
@@ -158,10 +165,7 @@ class IRPort:
     direction: PortDir
     rate: int = 1
     actor: Optional[IRActor] = field(default=None, repr=False)
-'''    
-    def __str__(self) -> str:
-        return f"{self.actor.unique_name}.{self.name}" if self.actor else self.name
-'''
+
 
 @dataclass
 class IRTensor:
@@ -208,7 +212,7 @@ class IRActor:
     op_type: OpType
     index: int = -1             # Set by graph
     unique_name: str = ""       # Set by graph: "CONV2D_0"
-    attributes: dict = field(default_factory=dict)  # ← add this
+    attributes: dict = field(default_factory=dict)  
 
     # Ports linked to tensors/params
     inputs : list[tuple[IRPort, IRTensor]] = field(default_factory=list)

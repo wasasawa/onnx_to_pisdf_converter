@@ -3,6 +3,16 @@ from xml.dom.minidom import parseString
 from structure import *
 from parser import *
 
+
+
+OPTIONAL_INPUTS = {
+    
+# op_key: { input_idx: (default_value, dtype, size func) }
+    "gemm": {
+        2: (0.0, "float", lambda actor: actor.outputs[0][1].shape),
+    },
+}
+
 def get_pi_file_for_actor(actor: IRActor) -> str:
     """
     Select the appropriate .pi file for an actor.
@@ -291,8 +301,63 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
             if t:
                 params[f"size{idx + 1}"] = t.size
 
+    elif op == OpType.TRANSPOSE:
+        t = input_tensor(0)
+        if t:
+            params["size"] = t.size
+        # perm attribute defines the permutation order
+        perm = attrs.get("perm", [])
+        for idx, p in enumerate(perm):
+            params[f"perm_{idx}"] = p
+
+    # =========================================================================
+    # GEMM 
+    # Params:
+    # =========================================================================
+    elif op == OpType.GEMM:
+        a = input_tensor(0)
+        b = input_tensor(1)
+        c = input_tensor(2)  # optional bias
+    
+        if a:
+            params["M"]      = a.shape[-2] if len(a.shape) >= 2 else 1
+            params["K"]      = a.shape[-1]
+            params["transA"] = attrs.get("transA", 0)
+            params["alpha"]  = int(attrs.get("alpha", 1.0))
+        if b:
+            params["N"]      = b.shape[-1]
+            params["transB"] = attrs.get("transB", 0)
+            params["beta"]   = int(attrs.get("beta", 1.0))
+        if c:
+            # C shape is (M, N) or broadcastable to it
+            params["sizeC"]  = c.size  
+
     return params
 
+constant_fill_counter = 0
+
+def handle_optional_input(graph: IRGraph, default_value: float, shape: list, dtype: str = "float") -> IRTensor:
+    global constant_fill_counter
+
+    tensor = graph.get_or_create_tensor(
+        f"constant_{constant_fill_counter}",
+        shape,
+        dtype=dtype
+    )
+
+    fill_actor = graph.create_actor(OpType.CONSTANT_FILL, f"constant_fill_{constant_fill_counter}")
+    fill_actor.source = "Code/include/constant_fill.h"
+
+    size_param  = graph.get_or_create_param("size_CONSTANT",  tensor.size)
+    value_param = graph.get_or_create_param("value_CONSTANT", int(default_value))
+    fill_actor.add_param("size_CONSTANT",  size_param)
+    fill_actor.add_param("value_CONSTANT", value_param)
+
+    fill_actor.add_output("output", tensor)
+    graph.link(tensor, fill_actor.get_port("output"), None)
+
+    constant_fill_counter += 1
+    return tensor
 
 def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
     graph = IRGraph(model_data["name"])
@@ -347,7 +412,7 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
                 actor.add_weight(port_name, weight_tensor)
                 graph.link(weight_tensor, None, actor.get_port(port_name))
                 weight_idx += 1
-        
+                        
         # Same but for outputs
         for idx, tensor_name in enumerate(node["outputs"]):
             output_tensor = graph.get_tensor(tensor_name)
@@ -357,7 +422,20 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
             port_name = f"output_{idx}"
             actor.add_output(port_name, output_tensor)
             graph.link(output_tensor, actor.get_port(port_name), None)
-        
+
+        optional = OPTIONAL_INPUTS.get(op_key, {})
+
+        # Handling optional inputs
+        for expected_idx, (default_value, dtype, shape_fn) in optional.items():
+            total_inputs = input_idx + weight_idx
+            if total_inputs <= expected_idx:
+                shape     = shape_fn(actor)
+                tensor    = handle_optional_input(graph, default_value, shape, dtype)
+                port_name = f"input_{input_idx}"
+                actor.add_input(port_name, tensor)
+                graph.link(tensor, None, actor.get_port(port_name))
+                input_idx += 1
+                
     # =========================================================================
     # Handle params, first extract from attributes, then add to actor class
     # =========================================================================            
@@ -428,10 +506,11 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
         for port, tensor in actor.weights:
             weight_consumers[tensor.name].append((actor, port))
 
-    global_weight_idx = 0
+    
 
     for dtype_name, section in offset_map.items(): 
 
+        section_weight_idx = 0
         itemsize       = ITEMSIZE.get(dtype_name, 4)
         total_elements = sum(info["n_elems"] for info in section["tensors"].values())
         dtype_lower    = dtype_name.lower()
@@ -456,7 +535,7 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
             tensor = graph.get_tensor(weight_name)
             if tensor is None:
                 print(f"  [WARN] '{weight_name}' not found in graph, skipping")
-                global_weight_idx += 1
+                section_weight_idx += 1
                 continue
 
             consumers = weight_consumers.get(weight_name, [])
@@ -467,7 +546,7 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
             else:
                 suffix = "unused"
 
-            port_name = f"weight_{global_weight_idx}_to_{suffix}"
+            port_name = f"weight_{section_weight_idx}_to_{suffix}"
 
             fork.add_output(port_name, tensor)
             graph.link(tensor, fork.get_port(port_name), None)
@@ -476,7 +555,7 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
             for actor, consumer_port in consumers:
                 graph.link(tensor, fork.get_port(port_name), consumer_port)
 
-            global_weight_idx += 1
+            section_weight_idx += 1
 
 def add_load_weights_actors(graph: IRGraph, offset_map: dict):
     for dtype_name, section in offset_map.items():

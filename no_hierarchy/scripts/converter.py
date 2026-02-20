@@ -43,6 +43,50 @@ def get_pi_file_for_actor(actor: IRActor) -> str:
     # -------------------------------------------------------------------------
     return OPTYPE_TO_PI.get(actor.op_type, "")
 
+
+def get_src_file_for_actor(actor: IRActor, is_header: bool) -> str:
+    """
+    Select the appropriate src file for an actor.
+    For most ops this is straightforward from OPTYPE_TO_PI or OPTYPE_TO_h.
+    Special cases:
+        - CONV: depends on whether bias input is present
+        - ADD: depends on the size pattern of the two inputs
+    """
+
+    # -------------------------------------------------------------------------
+    # CONV: check if bias input is present (3rd input)
+    # -------------------------------------------------------------------------
+    if actor.op_type in (OpType.CONV2D, OpType.CONV2D_BIAS):
+        has_bias = len(actor.inputs) >= 3
+        if is_header:
+            return "Code/include/conv2d_bias.h" if has_bias else "Code/include/conv2d.h"
+        return "Algo/conv2d_bias.pi" if has_bias else "Algo/conv2d.pi"
+
+    # -------------------------------------------------------------------------
+    # ADD: detect pattern from linked input tensor sizes
+    # -------------------------------------------------------------------------
+    elif actor.op_type in (OpType.ADD_SAME, OpType.ADD_BIAS, OpType.ADD_SCALAR, OpType.ADD_GENERIC):
+        t1 = actor.inputs[0][1] if len(actor.inputs) > 0 else None
+        t2 = actor.inputs[1][1] if len(actor.inputs) > 1 else None
+
+        size1 = t1.size if t1 else 0
+        size2 = t2.size if t2 else 0
+
+        if size1 == size2:
+            return "Code/include/add_same.h" if is_header else "Algo/add_same.pi"
+        elif size2 == 1:
+            return "Code/include/add_scalar.h" if is_header else "Algo/add_scalar.pi"
+        elif size1 > size2 and size2 > 0 and size1 % size2 == 0:
+            return "Code/include/add_bias.h" if is_header else "Algo/add_bias.pi"
+        else:
+            return "Code/include/add_generic.h" if is_header else "Algo/add_generic.pi"    
+
+    # -------------------------------------------------------------------------
+    # Everything else: straight lookup from the mapping table
+    # -------------------------------------------------------------------------
+    return OPTYPE_TO_H.get(actor.op_type, "") if is_header else OPTYPE_TO_PI.get(actor.op_type, "")
+
+
 def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dict:
     """
     Extract parameters from an actor using its already-linked IRTensor objects.

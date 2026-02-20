@@ -39,6 +39,9 @@ class OpType(Enum):
     CONCAT = auto()
     TRANSPOSE = auto()   
    
+    SLICE = auto()  
+    PAD = auto()
+    BATCHNORM = auto()
    # IO (special actors in top-level graph)
     LOAD_INPUT = auto()
     LOAD_WEIGHTS = auto()
@@ -76,6 +79,9 @@ ONNX_TO_OPTYPE = {
     "flatten": OpType.FLATTEN,
     "concat": OpType.CONCAT,
     "transpose": OpType.TRANSPOSE,
+    "slice": OpType.SLICE,
+    "pad": OpType.PAD,
+    "batchnormalization": OpType.BATCHNORM,
 }
 
 OPTYPE_TO_PI = {
@@ -101,8 +107,11 @@ OPTYPE_TO_PI = {
     OpType.RESHAPE: "Algo/reshape.pi",
     OpType.FLATTEN: "Algo/flatten.pi",
     OpType.CONCAT: "Algo/concat.pi",
-    OpType.TRANSPOSE: "Code/include/transpose.h", 
-    
+    OpType.TRANSPOSE: "Algo/transpose.pi", 
+
+    OpType.SLICE: "Algo/slice.pi",
+    OpType.PAD: "Algo/pad.pi",
+    OpType.BATCHNORM: "Algo/batchnorm.pi",
 
     OpType.LOAD_INPUT: "",
     OpType.LOAD_WEIGHTS: "",
@@ -135,7 +144,12 @@ OPTYPE_TO_H = {
     OpType.RESHAPE: "Code/include/reshape.h",
     OpType.FLATTEN: "Code/include/flatten.h",
     OpType.CONCAT: "Code/include/concat.h",
-    
+    OpType.TRANSPOSE: "Code/include/transpose.h",
+
+    OpType.SLICE: "Code/include/slice.h",
+    OpType.PAD: "Code/include/pad.h",
+    OpType.BATCHNORM: "Code/include/batchnorm.h",
+
     OpType.LOAD_INPUT: "",
     OpType.LOAD_WEIGHTS: "",
     OpType.SPLIT_WEIGHTS: "",

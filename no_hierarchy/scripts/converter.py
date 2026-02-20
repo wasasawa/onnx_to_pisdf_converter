@@ -11,6 +11,14 @@ OPTIONAL_INPUTS = {
     "gemm": {
         2: (0.0, "float", lambda actor: actor.outputs[0][1].shape),
     },
+    "slice": {
+        3: (0, "int64", lambda actor: list(range(len(actor.inputs[1][1].shape)))),
+        4: (1, "int64", lambda actor: [1] * len(actor.inputs[1][1].shape)),
+    },
+    "pad": {
+        2: (0.0, "float", lambda actor: [1]),  # constant_value default 0
+        3: (0, "int64", lambda actor: [1] * len(actor.inputs[0][1].shape)),  # axes default
+    },
 }
 
 def get_pi_file_for_actor(actor: IRActor) -> str:
@@ -108,7 +116,6 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
 
     def input_tensor(idx) -> Optional[IRTensor]:
         return actor.inputs[idx][1] if idx < len(actor.inputs) else None
-
     def output_tensor(idx) -> Optional[IRTensor]:
         return actor.outputs[idx][1] if idx < len(actor.outputs) else None
 
@@ -331,6 +338,32 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
         if c:
             # C shape is (M, N) or broadcastable to it
             params["sizeC"]  = c.size  
+    # =========================================================================
+    # SLICE 
+    # Params:rank, starts, ends, axes, steps
+    # =========================================================================
+    elif actor.op_type == OpType.SLICE:
+        data = input_tensor(0)
+        params["rank"]  = len(data.shape)
+    # =========================================================================
+    # PAD 
+    # Params: rankInput, padSize, padValue, axesSize, mode
+    # ========================================================================= 
+    elif actor.op_type == OpType.PAD:
+        # Only attribute-based config params
+        params["mode"] = {"constant":0, "edge":1, "reflect":2, "wrap":3}[actor.attributes.get("mode","constant")]
+    # =========================================================================
+    # BATCHNORM 
+    # Params: epsilon, channels, sizeX, sizeScale, sizeBias, sizeMean, sizeVar
+    # =========================================================================
+    elif actor.op_type == OpType.BATCHNORM:
+       # Static config params
+        params["epsilon"] = actor.attributes.get("epsilon", 1e-5)
+
+        # Number of channels (scalar) from the scale tensor
+        scale = input_tensor(1)
+        if scale:
+            params["channels"] = scale.size
 
     return params
 

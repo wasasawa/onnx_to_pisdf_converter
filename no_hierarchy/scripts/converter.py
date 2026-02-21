@@ -726,11 +726,42 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
             port_name = f"weight_{section_weight_idx}_to_{suffix}"
 
             fork.add_output(port_name, tensor)
-            graph.link(tensor, fork.get_port(port_name), None)
+            fork_out_port = fork.get_port(port_name)
 
-            # Wire to each consuming actor's weight port
-            for actor, consumer_port in consumers:
-                graph.link(tensor, fork.get_port(port_name), consumer_port)
+            if len(consumers) <= 1:
+                # Simple case: zero or one consumer — direct single FIFO
+                # tensor.producer = fork_out_port, tensor.consumers = [consumer]
+                graph.link(tensor, fork_out_port, None)
+                for actor, consumer_port in consumers:
+                    graph.link(tensor, fork_out_port, consumer_port)
+            else:
+                # Multiple consumers: PREESM requires one FIFO per source port.
+                # Insert a BROADCAST actor between fork and consumers.
+                # We do NOT route through 'tensor' at all — clear its linkage
+                # so get_fifo_edges() doesn't emit old direct edges.
+                tensor.producer = None
+                tensor.consumers.clear()
+
+                bcast = graph.create_actor(OpType.BROADCAST, f"broadcast_weight")
+
+                # Input tensor: fork_out_port → bcast.input
+                bcast_in_tensor = graph.get_or_create_tensor(
+                    f"{weight_name}_to_bcast",
+                    tensor.shape,
+                    tensor.dtype,
+                )
+                bcast_in_port = bcast.add_input("input", bcast_in_tensor)
+                graph.link(bcast_in_tensor, fork_out_port, bcast_in_port)
+
+                # One output port per consumer
+                for out_idx, (actor, consumer_port) in enumerate(consumers):
+                    bcast_out_tensor = graph.get_or_create_tensor(
+                        f"{weight_name}_bcast_{out_idx}",
+                        tensor.shape,
+                        tensor.dtype,
+                    )
+                    bcast_out_port = bcast.add_output(f"output_{out_idx}", bcast_out_tensor)
+                    graph.link(bcast_out_tensor, bcast_out_port, consumer_port)
 
             section_weight_idx += 1
 

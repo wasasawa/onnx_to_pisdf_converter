@@ -260,12 +260,12 @@ class IRActor:
         return port
     
     def add_weight(self, port_name: str, tensor: IRTensor) -> IRPort:
-        port = IRPort(name=port_name, direction=PortDir.IN, rate=1, actor=self)
+        port = IRPort(name=port_name, direction=PortDir.IN, rate=tensor.size, actor=self)
         self.weights.append((port, tensor))
         return port
     
     def get_port(self, name: str) -> Optional[IRPort]:
-        for port, _ in self.inputs + self.outputs + self.params:
+        for port, _ in self.inputs + self.outputs + self.params + self.weights:
             if port.name == name:
                 return port
         return None

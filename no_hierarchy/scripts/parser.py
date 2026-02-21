@@ -138,6 +138,10 @@ def parse_onnx_model(model_path):
         "outputs": outputs,
         "initializers": initializers,
         "initializer_names": initializer_names,
+        # Maps each initializer tensor name to its ONNX data-type integer
+        # (e.g. TensorProto.FLOAT=1, TensorProto.INT64=7).  Used in fill_IRGraph
+        # to stamp the correct dtype on every IRTensor instead of defaulting all to "float".
+        "initializer_dtype_map": {init.name: init.data_type for init in graph.initializer},
         "nodes": nodes,
         "model": model,
     }

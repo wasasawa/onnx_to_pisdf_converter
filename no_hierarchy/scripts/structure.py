@@ -50,6 +50,7 @@ class OpType(Enum):
     OUTPUT = auto()
 
     CONSTANT_FILL = auto()
+    RANGE_FILL = auto()  # Generates [start, start+step, ..., start+(size-1)*step]
 
 class PortDir(Enum):
     IN = auto()
@@ -112,13 +113,15 @@ OPTYPE_TO_PI = {
     OpType.SLICE: "Algo/slice.pi",
     OpType.PAD: "Algo/pad.pi",
     OpType.BATCHNORM: "Algo/batchnorm.pi",
+    OpType.GEMM: "Algo/gemm.pi",
 
     OpType.LOAD_INPUT: "",
     OpType.LOAD_WEIGHTS: "",
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
     OpType.OUTPUT: "",
-
+    OpType.CONSTANT_FILL: "",
+    OpType.RANGE_FILL: "",
 }
 
 OPTYPE_TO_H = {
@@ -149,12 +152,15 @@ OPTYPE_TO_H = {
     OpType.SLICE: "Code/include/slice.h",
     OpType.PAD: "Code/include/pad.h",
     OpType.BATCHNORM: "Code/include/batchnorm.h",
+    OpType.GEMM: "Code/include/gemm.h",
 
     OpType.LOAD_INPUT: "",
     OpType.LOAD_WEIGHTS: "",
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
     OpType.OUTPUT: "",
+    OpType.CONSTANT_FILL: "Code/include/constant_fill.h",
+    OpType.RANGE_FILL: "Code/include/range_fill.h",
 }
 
 # =============================================================================

@@ -6,18 +6,70 @@ from parser import *
 
 
 OPTIONAL_INPUTS = {
-    
-# op_key: { input_idx: (default_value, dtype, size func) }
+
+    # -----------------------------------------------------------------
+    # GEMM  –  inputs: A(data), B(weight), [C(weight)]
+    #   C is an optional bias initializer; default = 0 scalar broadcast
+    #   to the output shape (M, N).
+    # -----------------------------------------------------------------
     "gemm": {
-        2: (0.0, "float", lambda actor: actor.outputs[0][1].shape),
+        2: {
+            "fill":      "constant",
+            "value":     0.0,
+            "dtype":     "float",
+            "is_weight": True,                                          # C is an initializer when present
+            "shape_fn":  lambda actor: actor.outputs[0][1].shape,      # shape = (M, N)
+        },
     },
+
+    # -----------------------------------------------------------------
+    # SLICE  –  inputs: data(data), starts(weight), ends(weight),
+    #                   [axes(weight)], [steps(weight)]
+    #   axes  default = [0, 1, …, rank-1]  → RANGE_FILL
+    #   steps default = [1, 1, …, 1]       → CONSTANT_FILL
+    #   rank is derived from data = actor.inputs[0]
+    # -----------------------------------------------------------------
     "slice": {
-        3: (0, "int64", lambda actor: list(range(len(actor.inputs[1][1].shape)))),
-        4: (1, "int64", lambda actor: [1] * len(actor.inputs[1][1].shape)),
+        3: {
+            "fill":      "range",
+            "value":     0,                                             # start
+            "step":      1,
+            "dtype":     "int64",
+            "is_weight": True,                                          # axes is an initializer when present
+            "shape_fn":  lambda actor: [len(actor.inputs[0][1].shape)],# 1-D tensor of length = rank
+        },
+        4: {
+            "fill":      "constant",
+            "value":     1,                                             # step value
+            "dtype":     "int64",
+            "is_weight": True,                                          # steps is an initializer when present
+            "shape_fn":  lambda actor: [len(actor.inputs[0][1].shape)],# 1-D tensor of length = rank
+        },
     },
+
+    # -----------------------------------------------------------------
+    # PAD  –  inputs: data(data), pads(weight),
+    #                 [constant_value(weight)], [axes(weight, opset>=18)]
+    #   constant_value default = 0.0  → CONSTANT_FILL scalar
+    #   axes           default = [0, 1, …, rank-1] → RANGE_FILL
+    #   rank is derived from data = actor.inputs[0]
+    # -----------------------------------------------------------------
     "pad": {
-        2: (0.0, "float", lambda actor: [1]),  # constant_value default 0
-        3: (0, "int64", lambda actor: [1] * len(actor.inputs[0][1].shape)),  # axes default
+        2: {
+            "fill":      "constant",
+            "value":     0.0,
+            "dtype":     "float",
+            "is_weight": True,                                          # constant_value is an initializer when present
+            "shape_fn":  lambda actor: [1],                             # scalar
+        },
+        3: {
+            "fill":      "range",
+            "value":     0,
+            "step":      1,
+            "dtype":     "int64",
+            "is_weight": True,                                          # axes is an initializer when present
+            "shape_fn":  lambda actor: [len(actor.inputs[0][1].shape)],# 1-D tensor of length = rank
+        },
     },
 }
 
@@ -118,6 +170,8 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
         return actor.inputs[idx][1] if idx < len(actor.inputs) else None
     def output_tensor(idx) -> Optional[IRTensor]:
         return actor.outputs[idx][1] if idx < len(actor.outputs) else None
+    def weight_tensor(idx) -> Optional[IRTensor]:
+        return actor.weights[idx][1] if idx < len(actor.weights) else None
 
     # =========================================================================
     # RELU, SIGMOID, TANH, DROPOUT
@@ -323,21 +377,26 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     # =========================================================================
     elif op == OpType.GEMM:
         a = input_tensor(0)
-        b = input_tensor(1)
-        c = input_tensor(2)  # optional bias
+        b = weight_tensor(0)   # B weight matrix is always an initializer
+        c = weight_tensor(1)   # C bias is always an initializer (optional)
     
+        transA = attrs.get("transA", 0)
+        transB = attrs.get("transB", 0)
+
         if a:
-            params["M"]      = a.shape[-2] if len(a.shape) >= 2 else 1
-            params["K"]      = a.shape[-1]
-            params["transA"] = attrs.get("transA", 0)
+            # A is (M, K) normally; with transA=1 it is stored as (K, M)
+            params["M"]      = a.shape[-1] if transA else (a.shape[-2] if len(a.shape) >= 2 else 1)
+            params["K"]      = a.shape[-2] if transA else a.shape[-1]
+            params["transA"] = transA
             params["alpha"]  = int(attrs.get("alpha", 1.0))
         if b:
-            params["N"]      = b.shape[-1]
-            params["transB"] = attrs.get("transB", 0)
+            # B is (K, N) normally; with transB=1 it is stored as (N, K)
+            # → N is b.shape[0] when transB=1, b.shape[-1] otherwise
+            params["N"]      = b.shape[0] if transB else b.shape[-1]
+            params["transB"] = transB
             params["beta"]   = int(attrs.get("beta", 1.0))
         if c:
-            # C shape is (M, N) or broadcastable to it
-            params["sizeC"]  = c.size  
+            params["sizeC"]  = c.size
     # =========================================================================
     # SLICE 
     # Params:rank, starts, ends, axes, steps
@@ -392,12 +451,74 @@ def handle_optional_input(graph: IRGraph, default_value: float, shape: list, dty
     constant_fill_counter += 1
     return tensor
 
+
+range_fill_counter = 0
+
+def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype: str = "int64") -> IRTensor:
+    """
+    Create a RANGE_FILL actor that generates the sequence:
+        [start, start+step, start+2*step, …]  of len = product(shape)
+
+    Used for optional inputs whose default is an integer range, e.g.:
+        - Slice  axes  → [0, 1, …, rank-1]
+        - Pad    axes  → [0, 1, …, rank-1]
+    """
+    global range_fill_counter
+
+    tensor = graph.get_or_create_tensor(
+        f"range_{range_fill_counter}",
+        shape,
+        dtype=dtype
+    )
+
+    fill_actor = graph.create_actor(OpType.RANGE_FILL, f"range_fill_{range_fill_counter}")
+    fill_actor.source = "Code/include/range_fill.h"
+
+    size_param  = graph.get_or_create_param("size_RANGE",  tensor.size)
+    start_param = graph.get_or_create_param("start_RANGE", start)
+    step_param  = graph.get_or_create_param("step_RANGE",  step)
+    fill_actor.add_param("size_RANGE",  size_param)
+    fill_actor.add_param("start_RANGE", start_param)
+    fill_actor.add_param("step_RANGE",  step_param)
+
+    fill_actor.add_output("output", tensor)
+    graph.link(tensor, fill_actor.get_port("output"), None)
+
+    range_fill_counter += 1
+    return tensor
+
 def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
     graph = IRGraph(model_data["name"])
 
-    # Create all the tensors from shape inference
+    # -------------------------------------------------------------------------
+    # Build a dtype lookup for initializer tensors.
+    # All other tensors (activations) are float by default.
+    # -------------------------------------------------------------------------
+    from onnx import TensorProto as _TP
+    _ONNX_DTYPE_TO_STR = {
+        _TP.FLOAT:    "float",
+        _TP.DOUBLE:   "double",
+        _TP.INT8:     "int8",
+        _TP.INT16:    "int16",
+        _TP.INT32:    "int32",
+        _TP.INT64:    "int64",
+        _TP.UINT8:    "uint8",
+        _TP.UINT16:   "uint16",
+        _TP.UINT32:   "uint32",
+        _TP.UINT64:   "uint64",
+        _TP.BOOL:     "bool",
+        _TP.FLOAT16:  "float16",
+        _TP.BFLOAT16: "bfloat16",
+    }
+    initializer_dtype_map = {
+        name: _ONNX_DTYPE_TO_STR.get(dtype_int, "float")
+        for name, dtype_int in model_data.get("initializer_dtype_map", {}).items()
+    }
+
+    # Create all the tensors from shape inference, stamping the correct dtype
     for name, dims in shapes.items():
-        graph.create_tensor(name, dims)
+        dtype = initializer_dtype_map.get(name, "float")
+        graph.create_tensor(name, dims, dtype=dtype)
 
     registry = {} # Dic to deduplicate params, (param_name, value) -> unique_id
 
@@ -430,9 +551,9 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
                 if input_tensor is None:
                     print(f"  [WARN] Actor '{actor.unique_name}': input tensor '{tensor_name}' not found in graph")
                     continue
-                port_name = f"input_{input_idx}"
-                actor.add_input(port_name, input_tensor)
-                graph.link(input_tensor, None, actor.get_port(port_name))
+                port_name  = f"input_{input_idx}"
+                input_port = actor.add_input(port_name, input_tensor)
+                graph.link(input_tensor, None, input_port)   
                 input_idx += 1
         
             else:
@@ -441,9 +562,10 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
                 if weight_tensor is None:
                     print(f"  [WARN] Actor '{actor.unique_name}': weight tensor '{tensor_name}' not found in graph")
                     continue
-                port_name = f"weight_{weight_idx}"
-                actor.add_weight(port_name, weight_tensor)
-                graph.link(weight_tensor, None, actor.get_port(port_name))
+                weight_tensor.declare_weight()
+                port_name   = f"weight_{weight_idx}"
+                weight_port = actor.add_weight(port_name, weight_tensor)
+                graph.link(weight_tensor, None, weight_port)  # use returned port directly
                 weight_idx += 1
                         
         # Same but for outputs
@@ -457,16 +579,38 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
             graph.link(output_tensor, actor.get_port(port_name), None)
 
         optional = OPTIONAL_INPUTS.get(op_key, {})
+        raw_inputs = node["inputs"]
+        for abs_idx, spec in sorted(optional.items()):
+            is_missing = abs_idx >= len(raw_inputs) or raw_inputs[abs_idx] == ""
+            if not is_missing:
+                continue
 
-        # Handling optional inputs
-        for expected_idx, (default_value, dtype, shape_fn) in optional.items():
-            total_inputs = input_idx + weight_idx
-            if total_inputs <= expected_idx:
-                shape     = shape_fn(actor)
-                tensor    = handle_optional_input(graph, default_value, shape, dtype)
-                port_name = f"input_{input_idx}"
-                actor.add_input(port_name, tensor)
-                graph.link(tensor, None, actor.get_port(port_name))
+            shape = spec["shape_fn"](actor)
+            dtype = spec["dtype"]
+
+            if spec["fill"] == "constant":
+                tensor = handle_optional_input(graph, spec["value"], shape, dtype)
+            else:  # "range"
+                tensor = handle_range_input(
+                    graph,
+                    start=spec.get("value", 0),
+                    step=spec.get("step", 1),
+                    shape=shape,
+                    dtype=dtype,
+                )
+
+            if spec.get("is_weight", False):
+                # Add as weight port – consistent naming with when the real tensor
+                # is a binary initializer.  Note: declare_weight() is NOT called
+                # because this tensor is synthetic (not from the weights binary).
+                port_name   = f"weight_{weight_idx}"
+                weight_port = actor.add_weight(port_name, tensor)
+                graph.link(tensor, None, weight_port)
+                weight_idx += 1
+            else:
+                port_name  = f"input_{input_idx}"
+                input_port = actor.add_input(port_name, tensor)
+                graph.link(tensor, None, input_port)
                 input_idx += 1
                 
     # =========================================================================

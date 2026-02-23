@@ -1,5 +1,5 @@
 from converter import *
-from blockdrop_pass import apply_blockdrop_pass, write_blockdrop_xml
+from blockdrop_pass import write_block_skipping_xml, apply_block_skipping_pass
     
 def main(model_path, output_xml="", output_weights="../bin/weights.bin"):
     model_data = parse_onnx_model(model_path)
@@ -15,9 +15,9 @@ def main(model_path, output_xml="", output_weights="../bin/weights.bin"):
 
     write_xml(graph, model_data, output_xml) 
 
-    n = apply_blockdrop_pass(graph)               # in-place, returns block count
+    n = apply_block_skipping_pass(graph)               # in-place, returns block count
     print(f"Applied BlockDrop pass: {n} residual blocks detected and transformed.")
-    write_blockdrop_xml(graph, model_data, "../output_graphs/resnet_blockdrop_V1.pi")
+    write_block_skipping_xml(graph, model_data, "../output_graphs/resnet_blockdrop_V1.pi")
     return graph
 
 

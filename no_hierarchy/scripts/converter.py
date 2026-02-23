@@ -3,7 +3,26 @@ from xml.dom.minidom import parseString
 from structure import *
 from parser import *
 
-
+# -------------------------------------------------------------------------
+# Build a dtype lookup for initializer tensors.
+# All other tensors (activations) are float by default.
+# -------------------------------------------------------------------------
+    
+_ONNX_DTYPE_TO_STR = {
+    TensorProto.FLOAT:    "float",
+    TensorProto.DOUBLE:   "double",
+    TensorProto.INT8:     "int8",
+    TensorProto.INT16:    "int16",
+    TensorProto.INT32:    "int32",
+    TensorProto.INT64:    "int64",
+    TensorProto.UINT8:    "uint8",
+    TensorProto.UINT16:   "uint16",
+    TensorProto.UINT32:   "uint32",
+    TensorProto.UINT64:   "uint64",
+    TensorProto.BOOL:     "bool",
+    TensorProto.FLOAT16:  "float16",
+    TensorProto.BFLOAT16: "bfloat16",
+}
 
 OPTIONAL_INPUTS = {
 
@@ -490,26 +509,6 @@ def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype
 def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
     graph = IRGraph(model_data["name"])
 
-    # -------------------------------------------------------------------------
-    # Build a dtype lookup for initializer tensors.
-    # All other tensors (activations) are float by default.
-    # -------------------------------------------------------------------------
-    from onnx import TensorProto as _TP
-    _ONNX_DTYPE_TO_STR = {
-        _TP.FLOAT:    "float",
-        _TP.DOUBLE:   "double",
-        _TP.INT8:     "int8",
-        _TP.INT16:    "int16",
-        _TP.INT32:    "int32",
-        _TP.INT64:    "int64",
-        _TP.UINT8:    "uint8",
-        _TP.UINT16:   "uint16",
-        _TP.UINT32:   "uint32",
-        _TP.UINT64:   "uint64",
-        _TP.BOOL:     "bool",
-        _TP.FLOAT16:  "float16",
-        _TP.BFLOAT16: "bfloat16",
-    }
     initializer_dtype_map = {
         name: _ONNX_DTYPE_TO_STR.get(dtype_int, "float")
         for name, dtype_int in model_data.get("initializer_dtype_map", {}).items()

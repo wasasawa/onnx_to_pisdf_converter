@@ -1,5 +1,5 @@
 from converter import *
-from blockdrop_pass import write_block_skipping_xml, apply_block_skipping_pass
+from block_skipping_pass import write_block_skipping_xml, apply_block_skipping_pass
     
 def main(model_path, output_xml="", output_weights="../bin/weights.bin"):
     model_data = parse_onnx_model(model_path)

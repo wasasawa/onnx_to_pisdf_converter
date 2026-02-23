@@ -206,7 +206,8 @@ class IRTensor:
     def size(self) -> int:
         result = 1
         for d in self.shape:
-            result *= d
+            if not isinstance(d, str):
+                result *= d
         return result
     
     @property
@@ -355,10 +356,9 @@ class IRGraph:
     
     def get_or_create_param(self, name: str, value: int) -> IRParam:
         # Graph decides naming format
-        if value >= 0:
-            unique_id = f"{name}_{value}"
-        else:
-            unique_id = f"{name}_{-value}"
+        value = f"{value}"
+        value = value.replace("-", "n").replace(".", "_")
+        unique_id = f"{name}_{value}"
         
         if unique_id not in self._params:
             self._params[unique_id] = IRParam(

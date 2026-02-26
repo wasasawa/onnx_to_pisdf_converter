@@ -23,6 +23,7 @@ class OpType(Enum):
     
     # Conv/Pool
     CONV2D = auto()
+    CONV2D_BIAS = auto()
     MAXPOOL2D = auto()
     AVGPOOL2D = auto()
     GLOBAL_AVGPOOL = auto()
@@ -96,6 +97,7 @@ OPTYPE_TO_PI = {
     OpType.ADD_GENERIC: "Algo/add_generic.pi",
     
     OpType.CONV2D: "Algo/conv2d.pi",
+    OpType.CONV2D_BIAS: "Algo/conv2d_bias.pi",
     OpType.MAXPOOL2D: "Algo/maxpool2d.pi",
     OpType.AVGPOOL2D: "Algo/avgpool2d.pi",
     OpType.GLOBAL_AVGPOOL: "Algo/global_avgpool.pi",
@@ -134,6 +136,7 @@ OPTYPE_TO_H = {
     OpType.ADD_GENERIC: "Code/include/add_generic.h",
     
     OpType.CONV2D: "Code/include/conv2d.h",
+    OpType.CONV2D_BIAS: "Code/include/conv2d_bias.h",
     OpType.MAXPOOL2D: "Code/include/maxpool2d.h",
     OpType.AVGPOOL2D: "Code/include/avgpool2d.h",
     OpType.GLOBAL_AVGPOOL: "Code/include/global_avgpool.h",
@@ -172,6 +175,7 @@ OPTYPE_TO_LOOP_FN = {
     OpType.ADD_GENERIC: "add_generic",
 
     OpType.CONV2D:         "conv2d",
+    OpType.CONV2D_BIAS:    "conv2d_bias",
     OpType.MAXPOOL2D:      "maxpool2d",
     OpType.AVGPOOL2D:      "avgpool2d",
     OpType.GLOBAL_AVGPOOL: "global_avgpool",

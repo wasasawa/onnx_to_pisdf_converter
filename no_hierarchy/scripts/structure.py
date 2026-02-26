@@ -130,10 +130,10 @@ OPTYPE_TO_H = {
     OpType.TANH: "Code/include/tanh.h",
     OpType.DROPOUT: "Code/include/dropout.h",
     
-    OpType.ADD_SAME: "Code/include/add_same.h",
-    OpType.ADD_BIAS: "Code/include/add_bias.h",
-    OpType.ADD_SCALAR: "Code/include/add_scalar.h",
-    OpType.ADD_GENERIC: "Code/include/add_generic.h",
+    OpType.ADD_SAME: "Code/include/add.h",
+    OpType.ADD_BIAS: "Code/include/add.h",
+    OpType.ADD_SCALAR: "Code/include/add.h",
+    OpType.ADD_GENERIC: "Code/include/add.h",
     
     OpType.CONV2D: "Code/include/conv2d.h",
     OpType.CONV2D_BIAS: "Code/include/conv2d_bias.h",
@@ -154,13 +154,13 @@ OPTYPE_TO_H = {
     OpType.BATCHNORM: "Code/include/batchnorm.h",
     OpType.GEMM: "Code/include/gemm.h",
 
-    OpType.LOAD_INPUT: "",
-    OpType.LOAD_WEIGHTS: "",
+    OpType.LOAD_INPUT: "Code/include/load_input.h",
+    OpType.LOAD_WEIGHTS: "Code/include/load_weights.h",
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
-    OpType.OUTPUT: "",
-    OpType.CONSTANT_FILL: "Code/include/constant_fill.h",
-    OpType.RANGE_FILL: "Code/include/range_fill.h",
+    OpType.OUTPUT: "Code/include/output.h",
+    OpType.CONSTANT_FILL: "Code/include/utilities.h",
+    OpType.RANGE_FILL: "Code/include/utilities.h",
 }
 
 # =============================================================================

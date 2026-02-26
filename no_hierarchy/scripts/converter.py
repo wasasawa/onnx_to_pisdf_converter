@@ -456,7 +456,7 @@ def handle_optional_input(graph: IRGraph, default_value: float, shape: list, dty
     )
 
     fill_actor = graph.create_actor(OpType.CONSTANT_FILL, f"constant_fill_{constant_fill_counter}")
-    fill_actor.source = "Code/include/constant_fill.h"
+    fill_actor.source = OPTYPE_TO_H.get(OpType.CONSTANT_FILL, "")
 
     size_param  = graph.get_or_create_param("size_CONSTANT",  tensor.size)
     value_param = graph.get_or_create_param("value_CONSTANT", int(default_value))
@@ -490,7 +490,7 @@ def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype
     )
 
     fill_actor = graph.create_actor(OpType.RANGE_FILL, f"range_fill_{range_fill_counter}")
-    fill_actor.source = "Code/include/range_fill.h"
+    fill_actor.source = OPTYPE_TO_H.get(OpType.RANGE_FILL, "")
 
     size_param  = graph.get_or_create_param("size_RANGE",  tensor.size)
     start_param = graph.get_or_create_param("start_RANGE", start)

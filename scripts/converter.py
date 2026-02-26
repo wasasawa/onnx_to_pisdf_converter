@@ -27,6 +27,30 @@ _ONNX_DTYPE_TO_STR = {
 OPTIONAL_INPUTS = {
 
     # -----------------------------------------------------------------
+    # CONV  –  inputs: X(data), W(weight), [B(weight)]
+    #   B is an optional bias initializer; default = 0 vector of size
+    #   depthOutput (= number of output channels = W.shape[0]).
+    # -----------------------------------------------------------------
+    "conv": {
+        2: {
+            "fill":      "constant",
+            "value":     0.0,
+            "dtype":     "float",
+            "is_weight": True,
+            "shape_fn":  lambda actor: [actor.weights[0][1].shape[0]],  # W.shape[0] = depthOutput
+        },
+    },
+    "convolution": {  # alias used by some exporters
+        2: {
+            "fill":      "constant",
+            "value":     0.0,
+            "dtype":     "float",
+            "is_weight": True,
+            "shape_fn":  lambda actor: [actor.weights[0][1].shape[0]],
+        },
+    },
+
+    # -----------------------------------------------------------------
     # GEMM  –  inputs: A(data), B(weight), [C(weight)]
     #   C is an optional bias initializer; default = 0 scalar broadcast
     #   to the output shape (M, N).
@@ -102,10 +126,10 @@ def get_pi_file_for_actor(actor: IRActor) -> str:
     """
 
     # -------------------------------------------------------------------------
-    # CONV: check if bias input is present (3rd input)
+    # CONV: check if bias weight is present (weight_1)
     # -------------------------------------------------------------------------
-    if actor.op_type in (OpType.CONV2D, OpType.CONV2D_BIAS):
-        has_bias = len(actor.inputs) >= 3
+    if actor.op_type == OpType.CONV2D:
+        has_bias = len(actor.weights) >= 2
         return "Algo/conv2d_bias.pi" if has_bias else "Algo/conv2d.pi"
 
     # -------------------------------------------------------------------------
@@ -143,10 +167,10 @@ def get_src_file_for_actor(actor: IRActor, is_header: bool) -> str:
     """
 
     # -------------------------------------------------------------------------
-    # CONV: check if bias input is present (3rd input)
+    # CONV: check if bias weight is present (weight_1)
     # -------------------------------------------------------------------------
-    if actor.op_type in (OpType.CONV2D, OpType.CONV2D_BIAS):
-        has_bias = len(actor.inputs) >= 3
+    if actor.op_type == OpType.CONV2D:
+        has_bias = len(actor.weights) >= 2
         if is_header:
             return "Code/include/conv2d_bias.h" if has_bias else "Code/include/conv2d.h"
         return "Algo/conv2d_bias.pi" if has_bias else "Algo/conv2d.pi"
@@ -214,14 +238,14 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
             params["size2"] = t2.size
 
     # =========================================================================
-    # CONV2D / CONV2D_BIAS
+    # CONV2D
     # input_0: [N, C_in, H, W]
-    # input_1: [C_out, C_in, kH, kW]  ← weight tensor
-    # input_2: [C_out]                 ← bias (CONV2D_BIAS only)
+    # weight_0: [C_out, C_in, kH, kW]
+    # weight_1: [C_out]  ← bias (optional, filled by OPTIONAL_INPUTS if absent)
     # =========================================================================
-    elif op in (OpType.CONV2D, OpType.CONV2D_BIAS):
+    elif op == OpType.CONV2D:
         input_t  = input_tensor(0)
-        weight_t = input_tensor(1)
+        weight_t = weight_tensor(0)   # W is always an initializer → stored in actor.weights
         output_t = output_tensor(0)
 
         if weight_t and len(weight_t.shape) >= 4:

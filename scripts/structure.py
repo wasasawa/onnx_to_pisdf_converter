@@ -163,6 +163,48 @@ OPTYPE_TO_H = {
     OpType.RANGE_FILL: "Code/include/range_fill.h",
 }
 
+OPTYPE_TO_LOOP_FN = {
+    OpType.RELU:    "relu",
+    OpType.SIGMOID: "sigmoid",
+    OpType.TANH:    "tanh_op",        # NOT "tanh" — clashes with <math.h>
+    OpType.DROPOUT: "dropout",
+
+    OpType.ADD_SAME:    "add_same",
+    OpType.ADD_BIAS:    "add_bias",
+    OpType.ADD_SCALAR:  "add_scalar",
+    OpType.ADD_GENERIC: "add_generic",
+
+    OpType.CONV2D:         "conv2d",
+    OpType.CONV2D_BIAS:    "conv2d_bias",
+    OpType.MAXPOOL2D:      "maxpool2d",
+    OpType.AVGPOOL2D:      "avgpool2d",
+    OpType.GLOBAL_AVGPOOL: "global_avgpool",
+
+    OpType.MATMUL:   "matmul",
+    OpType.SOFTMAX:  "softmax",
+    OpType.GEMM:     "gemm",
+
+    OpType.RESHAPE:   "reshape",
+    OpType.FLATTEN:   "flatten",
+    OpType.CONCAT:    "concat",
+    OpType.TRANSPOSE: "transpose",
+
+    OpType.SLICE:     "slice",
+    OpType.PAD:       "pad",
+    OpType.BATCHNORM: "batchnorm_spatial",  # NOT "batchnorm"
+
+    OpType.LOAD_INPUT:    "load_cifar_image",  # defined in image_loader.cpp
+    OpType.LOAD_WEIGHTS:  "loadWeights",        # defined in weight_loader.cpp
+    OpType.OUTPUT:        "print_result",        # defined in output.cpp
+
+    OpType.CONSTANT_FILL: "constant_fill",
+    OpType.RANGE_FILL:    "range_fill",
+
+    # Structural actors — no loop function.
+    OpType.SPLIT_WEIGHTS: "",
+    OpType.BROADCAST:     "",
+}
+
 # =============================================================================
 # DATA CLASSES
 # =============================================================================

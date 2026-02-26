@@ -876,9 +876,10 @@ def _generate_actor_node(graph_el, actor: IRActor):
     # --- <data key="graph_desc"> ---
     SubElement(actor_el, "data", attrib={"key": "graph_desc"}).text = actor.source
 
-    # Loop function name derived from the header filename
-    # e.g. "Code/include/conv2d.h" -> "conv2d"
-    loop_fn = actor.unique_name
+    # Loop function name: the exact C function PREESM calls for this actor.
+    # Looked up from OPTYPE_TO_LOOP_FN; falls back to "" for structural actors
+    # (fork / broadcast) which PREESM handles internally without a loop fn.
+    loop_fn = OPTYPE_TO_LOOP_FN.get(actor.op_type, "")
 
     # --- <loop> ---
     loop_el = SubElement(actor_el, "loop", attrib={"name": loop_fn})

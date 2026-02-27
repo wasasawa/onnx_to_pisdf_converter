@@ -8,7 +8,7 @@ from xml.dom.minidom import parseString
 
 from structure import (
     IRGraph, IRActor, IRPort, IRTensor, IRParam,
-    OpType, PortDir, OPTYPE_TO_H,
+    OpType, PortDir, OPTYPE_TO_H, OPTYPE_TO_LOOP_FN
 )
 
 
@@ -640,7 +640,7 @@ def _insert_zero_and_select(
     zero_actor = IRActor(
         name=zero_name, op_type=OpType.BROADCAST,
         unique_name=zero_name, source="Code/include/utilities.h",
-        attributes={"_kind": "zero", "_loop_fn": "Zero"},
+        attributes={"_kind": "zero", "_loop_fn": "zero"},
     )
     graph._actors[zero_name] = zero_actor
     _add_cfg_port(zero_actor, keep_param)
@@ -846,7 +846,7 @@ def _generate_actor_node(graph_el: Element, actor: IRActor) -> None:
         kind = "fork"
     else:
         kind = "actor"
-    _emit_node(graph_el, actor, kind, actor.unique_name)
+    _emit_node(graph_el, actor, kind, OPTYPE_TO_LOOP_FN.get(actor.op_type, ""))
 
 
 def generate_block_skipping_xml(graph: IRGraph, model_data: dict) -> str:

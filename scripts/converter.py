@@ -208,10 +208,13 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     elif op in (OpType.ADD_SAME, OpType.ADD_BIAS, OpType.ADD_SCALAR, OpType.ADD_GENERIC):
         t1 = input_tensor(0)
         t2 = input_tensor(1)
+        t3 = weight_tensor(0)  # in case of ADD_BIAS, the bias is a weight not an input
         if t1:
             params["size1"] = t1.size
         if t2:
             params["size2"] = t2.size
+        if t3 and not t2:
+            params["size2"] = t3.size
 
     # =========================================================================
     # CONV2D / CONV2D_BIAS
@@ -221,7 +224,7 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     # =========================================================================
     elif op in (OpType.CONV2D, OpType.CONV2D_BIAS):
         input_t  = input_tensor(0)
-        weight_t = input_tensor(1)
+        weight_t = weight_tensor(0)   # W is always an initializer → stored in actor.weights
         output_t = output_tensor(0)
 
         if weight_t and len(weight_t.shape) >= 4:
@@ -242,6 +245,8 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
         params["strideWidth"]  = strides[1]
 
         dilations = attrs.get("dilations", [1, 1])
+        params["dilationHeight"] = dilations[0]
+        params["dilationWidth"]  = dilations[1]
         pads      = attrs.get("pads", [0, 0, 0, 0])
         auto_pad  = attrs.get("auto_pad", "NOTSET")
 
@@ -309,7 +314,9 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
         if output_t:
             params["outputHeight"] = output_t.height
             params["outputWidth"]  = output_t.width
-
+            
+        count_include_pad = attrs.get("count_include_pad", 0)
+        params["countIncludePad"] = count_include_pad
     # =========================================================================
     # GLOBAL AVERAGE POOL
     # input_0: [N, C, H, W]
@@ -323,11 +330,11 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     # =========================================================================
     # MATMUL
     # input_0: [M, K]
-    # input_1: [K, N]
+    # weights_0: [K, N]
     # =========================================================================
     elif op == OpType.MATMUL:
         a = input_tensor(0)
-        b = input_tensor(1)
+        b = weight_tensor(0)
         if a:
             params["M"] = a.shape[-2] if len(a.shape) >= 2 else 1
             params["K"] = a.shape[-1]
@@ -342,6 +349,14 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
         t = input_tensor(0)
         if t:
             params["size"] = t.size
+            axis = attrs.get("axis", -1)
+            if axis < 0:
+                axis = len(t.shape) + axis
+            # outerSize = product of all dims before 'axis'
+            outer = 1
+            for d in t.shape[:axis]:
+                outer *= d
+            params["outerSize"] = outer
 
     # =========================================================================
     # RESHAPE
@@ -351,13 +366,11 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     elif op == OpType.RESHAPE:
         input_t  = input_tensor(0)
         output_t = output_tensor(0)
-        shape_t  = input_tensor(1)   # the shape tensor (e.g. [1, 512])
         if input_t:
             params["inputSize"]  = input_t.size
         if output_t:
             params["outputSize"] = output_t.size
-        if shape_t:
-            params["shapeSize"]  = shape_t.size  # number of dims
+            params["shapeSize"]  = len(output_t.shape)  # number of dims
 
     # =========================================================================
     # FLATTEN
@@ -376,17 +389,32 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     # Params: size1, size2 (first two inputs)
     # =========================================================================
     elif op == OpType.CONCAT:
-        for idx in range(min(2, len(actor.inputs))):
+        len_inputs = len(actor.inputs)
+        len_weights = len(actor.weights)
+        for idx in range(len_inputs):  
             t = input_tensor(idx)
             if t:
                 params[f"size{idx + 1}"] = t.size
-
+        for idx in range(len_weights):  
+            t = weight_tensor(idx)
+            if t:
+                params[f"size{idx + len_inputs + 1}"] = t.size
+    # =========================================================================
+    # TRANSPOSE
+    # Params: 
+    # =========================================================================
     elif op == OpType.TRANSPOSE:
         t = input_tensor(0)
         if t:
-            params["size"] = t.size
+            # params["size"] = t.size
+            params["ndim"] = len(t.shape)
+            for idx, d in enumerate(t.shape):
+                params[f"in_dim_{idx}"] = d
         # perm attribute defines the permutation order
         perm = attrs.get("perm", [])
+        if not perm and t:
+            # default perm = reversed axes
+            perm = list(range(len(t.shape) - 1, -1, -1))
         for idx, p in enumerate(perm):
             params[f"perm_{idx}"] = p
 
@@ -422,26 +450,42 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     # =========================================================================
     elif actor.op_type == OpType.SLICE:
         data = input_tensor(0)
-        params["rank"]  = len(data.shape)
+        if data:
+            params["rank"] = len(data.shape)
+            for idx, d in enumerate(data.shape):
+                params[f"in_dim_{idx}"] = d
     # =========================================================================
     # PAD 
     # Params: rankInput, padSize, padValue, axesSize, mode
     # ========================================================================= 
     elif actor.op_type == OpType.PAD:
-        # Only attribute-based config params
-        params["mode"] = {"constant":0, "edge":1, "reflect":2, "wrap":3}[actor.attributes.get("mode","constant")]
+        params["mode"] = {"constant": 0, "edge": 1, "reflect": 2, "wrap": 3}.get(
+            actor.attributes.get("mode", "constant"), 0
+        )
+        data = input_tensor(0)
+        if data:
+            params["rank"] = len(data.shape)
+            for idx, d in enumerate(data.shape):
+                params[f"in_dim_{idx}"] = d
     # =========================================================================
     # BATCHNORM 
     # Params: epsilon, channels, sizeX, sizeScale, sizeBias, sizeMean, sizeVar
     # =========================================================================
     elif actor.op_type == OpType.BATCHNORM:
-       # Static config params
         params["epsilon"] = actor.attributes.get("epsilon", 1e-5)
 
-        # Number of channels (scalar) from the scale tensor
-        scale = input_tensor(1)
+        input_t = input_tensor(0)
+        scale   = input_tensor(1)   # scale is weight_0 in the graph
+
         if scale:
             params["channels"] = scale.size
+
+        if input_t and len(input_t.shape) >= 2:
+            # spatial dimensions are everything after the channel dim (index 1)
+            spatial = 1
+            for d in input_t.shape[2:]:
+                spatial *= d
+            params["spatialSize"] = spatial
 
     return params
 
@@ -457,7 +501,7 @@ def handle_optional_input(graph: IRGraph, default_value: float, shape: list, dty
     )
 
     fill_actor = graph.create_actor(OpType.CONSTANT_FILL, f"constant_fill_{constant_fill_counter}")
-    fill_actor.source = OPTYPE_TO_H.get(OpType.CONSTANT_FILL, "")
+    fill_actor.source = OPTYPE_TO_H.get(OpType.CONSTANT_FILL, "Code/include/utilities.h")
 
     size_param  = graph.get_or_create_param("size_CONSTANT",  tensor.size)
     value_param = graph.get_or_create_param("value_CONSTANT", int(default_value))
@@ -491,7 +535,7 @@ def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype
     )
 
     fill_actor = graph.create_actor(OpType.RANGE_FILL, f"range_fill_{range_fill_counter}")
-    fill_actor.source = OPTYPE_TO_H.get(OpType.RANGE_FILL, "")
+    fill_actor.source = OPTYPE_TO_H.get(OpType.RANGE_FILL, "Code/include/utilities.h")
 
     size_param  = graph.get_or_create_param("size_RANGE",  tensor.size)
     start_param = graph.get_or_create_param("start_RANGE", start)

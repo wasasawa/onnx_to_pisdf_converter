@@ -739,6 +739,51 @@ def _transform_block(
 
 
 # ===========================================================================
+# 12.5  POLICY NETWORK ACTOR
+# ===========================================================================
+
+def _insert_policy_network(graph: IRGraph, keep_params: list[IRParam]) -> IRActor:
+    """
+    Insert the policyNetwork actor into the graph.
+
+    The policyNetwork is a configuration-output actor: its loop function
+    ``setCombination`` dynamically writes each keep_<N> parameter at
+    runtime.  In PiSDF terms it has one *cfg_output* port per keep param,
+    each wired via a dependency edge to the corresponding param node.
+
+    The actor carries no data FIFOs — only the cfg_output ports.  Its
+    ``_cfg_outputs`` attribute records the ordered list of keep params so
+    the XML emitter can generate the correct dependency edges.
+
+    Parameters
+    ----------
+    graph       : IRGraph
+        The graph being transformed (modified in-place).
+    keep_params : list[IRParam]
+        Ordered list of keep_<N> params produced by the block transforms,
+        one per residual block.
+
+    Returns
+    -------
+    IRActor
+        The newly created policyNetwork actor.
+    """
+    actor = IRActor(
+        name="policyNetwork",
+        op_type=OpType.BROADCAST,          # closest available op; overridden by _kind
+        unique_name="policyNetwork",
+        source="Code/include/utilities.h",
+        attributes={
+            "_kind"       : "policy",
+            "_loop_fn"    : "setCombination",
+            "_cfg_outputs": keep_params,   # ordered list of IRParam
+        },
+    )
+    graph._actors["policyNetwork"] = actor
+    return actor
+
+
+# ===========================================================================
 # 13.  PUBLIC ENTRY POINT
 # ===========================================================================
 
@@ -746,6 +791,11 @@ def apply_block_skipping_pass(graph: IRGraph) -> int:
     """
     Detect all residual blocks and apply the block-skipping transformation
     in-place.  Returns the number of blocks transformed.
+
+    After all blocks are transformed a single ``policyNetwork`` actor is
+    inserted.  It owns a cfg_output port for every keep_<N> parameter and
+    its dependency edges replace the static param values as the runtime
+    source of the block-skip decisions.
     """
     blocks = detect_residual_blocks(graph)
     if not blocks:
@@ -753,14 +803,21 @@ def apply_block_skipping_pass(graph: IRGraph) -> int:
         return 0
 
     print(f"[BlockSkipping] Detected {len(blocks)} residual block(s).")
+    keep_params: list[IRParam] = []
     for idx, block in enumerate(blocks):
         keep = _transform_block(graph, block, idx)
+        keep_params.append(keep)
         compute_names = [a.unique_name for a in block.compute_actors]
         print(
             f"  Block {idx}: ADD='{block.add_actor.unique_name}'  "
             f"broadcast='{block.broadcast_actor.unique_name}'  "
             f"param='{keep.unique_id}'  compute={compute_names}"
         )
+
+    _insert_policy_network(graph, keep_params)
+    print(f"[BlockSkipping] Inserted policyNetwork actor "
+          f"(controls: {[p.unique_id for p in keep_params]}).")
+
     return len(blocks)
 
 
@@ -772,11 +829,13 @@ def apply_block_skipping_pass(graph: IRGraph) -> int:
 # Gate_Weights actors are Preesm forks (split data).
 # Zero and Sink actors are plain Preesm actors.
 # Select actors are Preesm joins.
+# policyNetwork is a plain Preesm actor with cfg_output ports.
 _SPECIAL_KIND_TO_XML_KIND: dict[str, str] = {
     "gate"  : "fork",
     "sink"  : "actor",
     "zero"  : "actor",
     "select": "join",
+    "policy": "actor",
 }
 
 
@@ -829,9 +888,43 @@ def _emit_node(graph_el: Element, actor: IRActor,
         })
 
 
+def _emit_policy_node(graph_el: Element, actor: IRActor) -> None:
+    """
+    Emit the <node> element for the policyNetwork actor.
+
+    The policy actor has only cfg_output ports — one per keep_<N> param.
+    Its loop params are ``direction="OUT" isConfig="true"`` with type
+    ``int64_t``, and its ports carry ``kind="cfg_output"``.  It has no
+    data FIFO ports at all.
+    """
+    keep_params: list[IRParam] = actor.attributes["_cfg_outputs"]
+    loop_fn: str               = actor.attributes["_loop_fn"]
+
+    node = SubElement(graph_el, "node", attrib={
+        "id": actor.unique_name, "kind": "actor", "period": "0",
+    })
+    SubElement(node, "data", attrib={"key": "graph_desc"}).text = actor.source
+    loop_el = SubElement(node, "loop", attrib={"name": loop_fn})
+
+    for param in keep_params:
+        SubElement(loop_el, "param", attrib={
+            "direction": "OUT", "isConfig": "true",
+            "name": param.unique_id, "type": "int64_t",
+        })
+
+    for param in keep_params:
+        SubElement(node, "port", attrib={
+            "kind": "cfg_output", "name": param.unique_id, "annotation": "NONE",
+        })
+
+
 def _generate_actor_node(graph_el: Element, actor: IRActor) -> None:
     """Emit the correct <node> for any actor, including block-skipping actors."""
     special = actor.attributes.get("_kind")
+
+    if special == "policy":
+        _emit_policy_node(graph_el, actor)
+        return
 
     if special in _SPECIAL_KIND_TO_XML_KIND:
         xml_kind = _SPECIAL_KIND_TO_XML_KIND[special]
@@ -847,6 +940,32 @@ def _generate_actor_node(graph_el: Element, actor: IRActor) -> None:
     else:
         kind = "actor"
     _emit_node(graph_el, actor, kind, OPTYPE_TO_LOOP_FN.get(actor.op_type, ""))
+
+
+def _emit_policy_dependency_edges(graph_el: Element, graph: IRGraph) -> None:
+    """
+    Emit dependency edges from the policyNetwork actor to each keep_<N>
+    param node.
+
+        <edge kind="dependency"
+              source="policyNetwork" sourceport="keep_N"
+              target="keep_N"/>
+
+    These replace the static param values as the authoritative source of
+    the block-skip decisions at runtime.
+    """
+    policy_actor = graph.get_actor("policyNetwork")
+    if policy_actor is None:
+        return
+
+    keep_params: list[IRParam] = policy_actor.attributes.get("_cfg_outputs", [])
+    for param in keep_params:
+        SubElement(graph_el, "edge", attrib={
+            "kind"      : "dependency",
+            "source"    : "policyNetwork",
+            "sourceport": param.unique_id,
+            "target"    : param.unique_id,
+        })
 
 
 def generate_block_skipping_xml(graph: IRGraph, model_data: dict) -> str:
@@ -880,6 +999,9 @@ def generate_block_skipping_xml(graph: IRGraph, model_data: dict) -> str:
             "source":     param.unique_id,
             "target":     dst_actor, "targetport": port.name,
         })
+
+    # Emit policyNetwork → keep_<N> dependency edges after all standard edges.
+    _emit_policy_dependency_edges(graph_el, graph)
 
     raw = tostring(root, encoding="unicode")
     return parseString(raw).toprettyxml(indent="  ")

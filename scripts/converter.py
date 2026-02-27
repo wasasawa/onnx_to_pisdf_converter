@@ -7,17 +7,18 @@ from parser import *
 # Build a dtype lookup for initializer tensors.
 # All other tensors (activations) are float by default.
 # -------------------------------------------------------------------------
+    
 _ONNX_DTYPE_TO_STR = {
     TensorProto.FLOAT:    "float",
     TensorProto.DOUBLE:   "double",
-    TensorProto.INT8:     "int8",
-    TensorProto.INT16:    "int16",
-    TensorProto.INT32:    "int32",
-    TensorProto.INT64:    "int64",
-    TensorProto.UINT8:    "uint8",
-    TensorProto.UINT16:   "uint16",
-    TensorProto.UINT32:   "uint32",
-    TensorProto.UINT64:   "uint64",
+    TensorProto.INT8:     "int8_t",
+    TensorProto.INT16:    "int16_t",
+    TensorProto.INT32:    "int32_t",
+    TensorProto.INT64:    "int64_t",
+    TensorProto.UINT8:    "uint8_t",
+    TensorProto.UINT16:   "uint16_t",
+    TensorProto.UINT32:   "uint32_t",
+    TensorProto.UINT64:   "uint64_t",
     TensorProto.BOOL:     "bool",
     TensorProto.FLOAT16:  "float16",
     TensorProto.BFLOAT16: "bfloat16",
@@ -52,14 +53,14 @@ OPTIONAL_INPUTS = {
             "fill":      "range",
             "value":     0,                                             # start
             "step":      1,
-            "dtype":     "int64",
+            "dtype":     "int64_t",
             "is_weight": True,                                          # axes is an initializer when present
             "shape_fn":  lambda actor: [len(actor.inputs[0][1].shape)],# 1-D tensor of length = rank
         },
         4: {
             "fill":      "constant",
             "value":     1,                                             # step value
-            "dtype":     "int64",
+            "dtype":     "int64_t",
             "is_weight": True,                                          # steps is an initializer when present
             "shape_fn":  lambda actor: [len(actor.inputs[0][1].shape)],# 1-D tensor of length = rank
         },
@@ -84,7 +85,7 @@ OPTIONAL_INPUTS = {
             "fill":      "range",
             "value":     0,
             "step":      1,
-            "dtype":     "int64",
+            "dtype":     "int64_t",
             "is_weight": True,                                          # axes is an initializer when present
             "shape_fn":  lambda actor: [len(actor.inputs[0][1].shape)],# 1-D tensor of length = rank
         },
@@ -472,7 +473,7 @@ def handle_optional_input(graph: IRGraph, default_value: float, shape: list, dty
 
 range_fill_counter = 0
 
-def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype: str = "int64") -> IRTensor:
+def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype: str = "int64_t") -> IRTensor:
     """
     Create a RANGE_FILL actor that generates the sequence:
         [start, start+step, start+2*step, …]  of len = product(shape)
@@ -766,7 +767,7 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
 def add_load_weights_actors(graph: IRGraph, offset_map: dict):
     for dtype_name, section in offset_map.items():
         total_elements = sum(info["n_elems"] for info in section["tensors"].values())
-        dtype_lower    = dtype_name.lower()
+        dtype_lower    = f"{dtype_name.lower()}_t" if dtype_name.startswith("INT") else dtype_name.lower()  
 
         section_tensor = graph.get_or_create_tensor(
             f"__weights_section_{dtype_name}__",
@@ -875,9 +876,10 @@ def _generate_actor_node(graph_el, actor: IRActor):
     # --- <data key="graph_desc"> ---
     SubElement(actor_el, "data", attrib={"key": "graph_desc"}).text = actor.source
 
-    # Loop function name derived from the header filename
-    # e.g. "Code/include/conv2d.h" -> "conv2d"
-    loop_fn = actor.unique_name
+    # Loop function name: the exact C function PREESM calls for this actor.
+    # Looked up from OPTYPE_TO_LOOP_FN; falls back to "" for structural actors
+    # (fork / broadcast) which PREESM handles internally without a loop fn.
+    loop_fn = OPTYPE_TO_LOOP_FN.get(actor.op_type, "")
 
     # --- <loop> ---
     loop_el = SubElement(actor_el, "loop", attrib={"name": loop_fn})

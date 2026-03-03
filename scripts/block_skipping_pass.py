@@ -480,7 +480,7 @@ def _create_keep_param(graph: IRGraph, block_idx: int) -> IRParam:
 
 def _add_cfg_port(actor: IRActor, keep_param: IRParam) -> None:
     """Idempotently add keep_<N> as a cfg_input port on actor."""
-    port_name = keep_param.unique_id
+    port_name = keep_param.name
     if any(p.name == port_name for p, _ in actor.params):
         return
     actor.add_param(port_name, keep_param)
@@ -645,6 +645,12 @@ def _insert_zero_and_select(
     graph._actors[zero_name] = zero_actor
     _add_cfg_port(zero_actor, keep_param)
 
+    # Add size parameter to Zero actor
+    size_param = IRParam(name=f"size", value=S, unique_id=f"size_{S}")
+    if f"size_{S}" not in graph._params:
+        graph._params[f"size_{S}"] = size_param
+    _add_cfg_port(zero_actor, size_param)
+    
     zero_tensor = graph.create_tensor(
         name=f"zero_tensor_block{block_idx}",
         shape=block.compute_result_tensor.shape, dtype=dtype,

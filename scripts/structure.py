@@ -35,6 +35,7 @@ class OpType(Enum):
     
     # Shape
     RESHAPE = auto()
+
     FLATTEN = auto()
     CONCAT = auto()
     TRANSPOSE = auto()   
@@ -106,6 +107,8 @@ OPTYPE_TO_PI = {
     OpType.SOFTMAX: "Algo/softmax.pi",
     
     OpType.RESHAPE: "Algo/reshape.pi",
+    
+
     OpType.FLATTEN: "Algo/flatten.pi",
     OpType.CONCAT: "Algo/concat.pi",
     OpType.TRANSPOSE: "Algo/transpose.pi", 
@@ -125,40 +128,41 @@ OPTYPE_TO_PI = {
 }
 
 OPTYPE_TO_H = {
-    OpType.RELU: "Code/include/relu.h",
-    OpType.SIGMOID: "Code/include/sigmoid.h",
-    OpType.TANH: "Code/include/tanh.h",
-    OpType.DROPOUT: "Code/include/dropout.h",
+    OpType.RELU: "Code/include/ops.h",
+    OpType.SIGMOID: "Code/include/ops.h",
+    OpType.TANH: "Code/include/ops.h",
+    OpType.DROPOUT: "Code/include/ops.h",
     
-    OpType.ADD_SAME: "Code/include/add_same.h",
-    OpType.ADD_BIAS: "Code/include/add_bias.h",
-    OpType.ADD_SCALAR: "Code/include/add_scalar.h",
-    OpType.ADD_GENERIC: "Code/include/add_generic.h",
+    OpType.ADD_SAME: "Code/include/add.h",
+    OpType.ADD_BIAS: "Code/include/add.h",
+    OpType.ADD_SCALAR: "Code/include/add.h",
+    OpType.ADD_GENERIC: "Code/include/add.h",
     
     OpType.CONV2D: "Code/include/conv2d.h",
-    OpType.CONV2D_BIAS: "Code/include/conv2d_bias.h",
+    OpType.CONV2D_BIAS: "Code/include/conv2d.h",
     OpType.MAXPOOL2D: "Code/include/maxpool2d.h",
     OpType.AVGPOOL2D: "Code/include/avgpool2d.h",
     OpType.GLOBAL_AVGPOOL: "Code/include/global_avgpool.h",
     
-    OpType.MATMUL: "Code/include/matmul.h",
-    OpType.SOFTMAX: "Code/include/softmax.h",
+    OpType.MATMUL: "Code/include/ops.h",
+    OpType.SOFTMAX: "Code/include/ops.h",
     
-    OpType.RESHAPE: "Code/include/reshape.h",
-    OpType.FLATTEN: "Code/include/flatten.h",
-    OpType.CONCAT: "Code/include/concat.h",
-    OpType.TRANSPOSE: "Code/include/transpose.h",
+    OpType.RESHAPE: "Code/include/ops.h",
+
+    OpType.FLATTEN: "Code/include/ops.h",
+    OpType.CONCAT: "Code/include/ops.h",
+    OpType.TRANSPOSE: "Code/include/ops.h",
 
     OpType.SLICE: "Code/include/slice.h",
     OpType.PAD: "Code/include/pad.h",
     OpType.BATCHNORM: "Code/include/batchnorm.h",
     OpType.GEMM: "Code/include/gemm.h",
 
-    OpType.LOAD_INPUT: "",
-    OpType.LOAD_WEIGHTS: "",
+    OpType.LOAD_INPUT: "Code/include/load_input.h",
+    OpType.LOAD_WEIGHTS: "Code/include/load_weights.h",
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
-    OpType.OUTPUT: "",
+    OpType.OUTPUT: "Code/include/output.h",
     OpType.CONSTANT_FILL: "Code/include/constant_fill.h",
     OpType.RANGE_FILL: "Code/include/range_fill.h",
 }
@@ -185,6 +189,7 @@ OPTYPE_TO_LOOP_FN = {
     OpType.GEMM:     "gemm",
 
     OpType.RESHAPE:   "reshape",
+
     OpType.FLATTEN:   "flatten",
     OpType.CONCAT:    "concat",
     OpType.TRANSPOSE: "transpose",

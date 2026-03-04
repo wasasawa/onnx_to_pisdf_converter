@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+    <graph edgedefault="directed">
+        <data key="name" />
+        <node id="input" kind="src">
+            <port annotation="NONE" expr="48400" kind="output" name="input" />
+        </node>
+        <node id="output_0" kind="snk">
+            <port annotation="NONE" expr="48400" kind="input" name="output_0" />
+        </node>
+        <node id="output_1" kind="snk">
+            <port annotation="NONE" expr="48400" kind="input" name="output_1" />
+        </node>
+        <node id="_neuron" kind="actor">
+            <data key="graph_desc" />
+            <loop name="_neuron">
+                <param direction="IN" isConfig="false" name="input" type="float" />
+                <param direction="OUT" isConfig="false" name="output_0" type="float" />
+                <param direction="OUT" isConfig="false" name="output_1" type="float" />
+            </loop>
+            <port annotation="NONE" expr="48400" kind="input" name="input" />
+            <port annotation="NONE" expr="48400" kind="output" name="output_0" />
+            <port annotation="NONE" expr="48400" kind="output" name="output_1" />
+        </node>
+        <edge kind="fifo" type="float" source="input" sourceport="input" target="_neuron" targetport="input" />
+        <edge kind="fifo" type="float" source="_neuron" sourceport="output_0" target="output_0" targetport="output_0" />
+        <edge kind="fifo" type="float" source="_neuron" sourceport="output_1" target="output_1" targetport="output_1" />
+    </graph>
+</graphml>

@@ -1,4 +1,5 @@
 from converter import *
+from block_skipping_pass import write_block_skipping_xml, apply_block_skipping_pass
 from pi_generator import *
 
     
@@ -16,6 +17,10 @@ def main(model_path, hierarchial = 0, output_xml="", output_weights="../bin/weig
 
     write_xml(graph, model_data, output_xml)
 
+    n = apply_block_skipping_pass(graph)               # in-place, returns block count
+    print(f"Applied BlockDrop pass: {n} residual blocks detected and transformed.")
+    write_block_skipping_xml(graph, model_data, "../output_graphs/dy_resnet_blockdrop.pi")
+
     if hierarchial:
         generate_all_pi_files(graph, "../sources/pi")
 
@@ -26,7 +31,7 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
         print("Usage: python main.py <model.onnx> [isHierarchial?] [output.xml] [weights.bin]")
-        print("Example: python main.py ../models/mnist-12.onnx 0 ../output_graphs/mnist_12.xml ../bin/weights.bin")
+        print("Example: python main.py ../models/mnist-12.onnx 0 ../output_graphs/mnist_12.pi ../bin/weights.bin")
         sys.exit(1)
 
     model_path = sys.argv[1] 
@@ -34,4 +39,4 @@ if __name__ == "__main__":
     output_xml = sys.argv[3] if len(sys.argv) > 3 else "../output_graphs/output.pi"
     output_weights = sys.argv[4] if len(sys.argv) > 4 else "../bin/weights.bin"
 
-    main(model_path, hierarchial,output_xml, output_weights)
+    main(model_path, hierarchial, output_xml, output_weights)

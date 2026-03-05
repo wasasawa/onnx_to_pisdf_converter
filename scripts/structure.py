@@ -163,8 +163,8 @@ OPTYPE_TO_H = {
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
     OpType.OUTPUT: "Code/include/output.h",
-    OpType.CONSTANT_FILL: "Code/include/constant_fill.h",
-    OpType.RANGE_FILL: "Code/include/range_fill.h",
+    OpType.CONSTANT_FILL: "Code/include/utilities.h",
+    OpType.RANGE_FILL: "Code/include/utilities.h",
 }
 
 OPTYPE_TO_LOOP_FN = {
@@ -253,7 +253,8 @@ class IRTensor:
     def size(self) -> int:
         result = 1
         for d in self.shape:
-            result *= d
+            if not isinstance(d, str):
+                result *= d
         return result
     
     @property
@@ -402,10 +403,9 @@ class IRGraph:
     
     def get_or_create_param(self, name: str, value: int) -> IRParam:
         # Graph decides naming format
-        if value >= 0:
-            unique_id = f"{name}_{value}"
-        else:
-            unique_id = f"{name}_{-value}"
+        value = f"{value}"
+        value = value.replace("-", "n").replace(".", "_")
+        unique_id = f"{name}_{value}"
         
         if unique_id not in self._params:
             self._params[unique_id] = IRParam(

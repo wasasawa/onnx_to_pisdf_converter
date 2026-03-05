@@ -474,12 +474,12 @@ def detect_residual_blocks(graph: IRGraph) -> list[ResidualBlock]:
 def _create_keep_param(graph: IRGraph, block_idx: int) -> IRParam:
     uid = f"keep_{block_idx}"
     if uid not in graph._params:
-        graph._params[uid] = IRParam(name=uid, value=1, unique_id=uid)
+        graph._params[uid] = IRParam(name=f"keep", value=1, unique_id=uid)
     return graph._params[uid]
 
 
 def _add_cfg_port(actor: IRActor, keep_param: IRParam) -> None:
-    """Idempotently add keep_<N> as a cfg_input port on actor."""
+    """Idempotently add keep as a cfg_input port on actor."""
     port_name = keep_param.name
     if any(p.name == port_name for p, _ in actor.params):
         return
@@ -492,13 +492,13 @@ def _add_cfg_port(actor: IRActor, keep_param: IRParam) -> None:
 
 def _modify_broadcast(block: ResidualBlock, keep_param: IRParam) -> None:
     """
-    Add keep_<N> as cfg_input to the broadcast actor and scale the
-    compute-path output port rate by keep_<N>.  The skip-path output rate
+    Add keep as cfg_input to the broadcast actor and scale the
+    compute-path output port rate by keep.  The skip-path output rate
     is left unchanged.
     """
     _add_cfg_port(block.broadcast_actor, keep_param)
     block.broadcast_compute_port.rate = _mul(
-        block.broadcast_compute_port.rate, keep_param.unique_id
+        block.broadcast_compute_port.rate, keep_param.name
     )
 
 
@@ -516,7 +516,7 @@ def _modify_compute_actor_data_rates(actor: IRActor, keep_param: IRParam) -> Non
     stale — we only need port.rate here.
     """
     _add_cfg_port(actor, keep_param)
-    pname = keep_param.unique_id
+    pname = keep_param.name
     for port, _ in actor.inputs:
         port.rate = _mul(port.rate, pname)
     for port, _ in actor.outputs:
@@ -545,12 +545,12 @@ def _insert_weight_gate(
 
     After:
         source ──[weight_tensor]──► Gate_Weights.weight_in     (rate W)
-            Gate_Weights.to_conv      (W * keep_<N>)  ──► compute_actor.weight_port
-            Gate_Weights.discarded (W*(1-keep_<N>))   ──► Sink.input
+            Gate_Weights.to_conv      (W * keep)  ──► compute_actor.weight_port
+            Gate_Weights.discarded (W*(1-keep))   ──► Sink.input
     """
     weight_port, weight_tensor = compute_actor.weights[weight_idx]
     W     = weight_tensor.size   # always the original static size
-    pname = keep_param.unique_id
+    pname = keep_param.name
     dtype = weight_tensor.dtype
 
     # ── Gate_Weights fork ─────────────────────────────────────────────────
@@ -623,15 +623,15 @@ def _insert_zero_and_select(
     """
     Insert a Zero actor and a Select (join) actor before ADD's compute input.
 
-        Zero.output   (S*(1-keep_<N>)) ──► Select.zero
-        compute_last  (S*keep_<N>)     ──► Select.b_output
-        Select.output (S, static)      ──► ADD.compute_input  [ADD unchanged]
+        Zero.output   (S*(1-keep)) ──► Select.zero
+        compute_last  (S*keep)     ──► Select.b_output
+        Select.output (S, static)  ──► ADD.compute_input  [ADD unchanged]
 
     When keep=1: Zero produces 0 tokens; Select forwards S compute tokens.
     When keep=0: Zero produces S tokens; Select forwards S zeros; ADD
                  effectively passes the skip path straight through.
     """
-    pname = keep_param.unique_id
+    pname = keep_param.name
     S     = block.block_output_size
     dtype = block.compute_result_tensor.dtype
 

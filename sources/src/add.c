@@ -1,35 +1,58 @@
 #include "add.h"
 
-/* A[i] + B[i] — both same size */
-void add_same(int size1, int size2, float* a, float* b, float* output) {
+// =============================================================================
+// Non-hierarchical versions
+// =============================================================================
+
+void add_same(int size1, float* input_0, float* input_1, float* output_0) {
     for (int i = 0; i < size1; i++)
-        output[i] = a[i] + b[i];
+        output_0[i] = input_0[i] + input_1[i];
 }
 
-/* A[i] + B[i % size2] — B is repeated across A */
-/* e.g. A is [N, C, H, W] and B is [C] (bias per channel) */
-void add_bias(int size1, int size2, float* a, float* b, float* output) {
+void add_bias(int size1, int size2, float* input_0, float* input_1, float* output_0) {
     for (int i = 0; i < size1; i++)
-        output[i] = a[i] + b[i % size2];
+        output_0[i] = input_0[i] + input_1[i % size2];
 }
 
-/* A[i] + B[0] — B is a single scalar broadcast to all */
-void add_scalar(int size1, int size2, float* a, float* b, float* output) {
-    float scalar = b[0];
-    for (int i = 0; i < size1; i++)
-        output[i] = a[i] + scalar;
+void add_scalar(int size1, int size2, float* input_0, float* input_1, float* output_0) {
+    float scalar = (size2 == 1) ? input_1[0] : input_0[0];
+    float* tensor = (size2 == 1) ? input_0 : input_1;
+    int size = (size2 == 1) ? size1 : size2;
+    for (int i = 0; i < size; i++)
+        output_0[i] = tensor[i] + scalar;
 }
 
-/* Generic: try bias pattern, fall back to scalar */
-void add_generic(int size1, int size2, float* a, float* b, float* output) {
-    if (size2 == 1) {
-        add_scalar(size1, size2, a, b, output);
+void add_generic(int size1, int size2, float* input_0, float* input_1, float* output_0) {
+    if (size2 == 1 || size1 == 1) {
+        add_scalar(size1, size2, input_0, input_1, output_0);
     } else if (size1 % size2 == 0) {
-        add_bias(size1, size2, a, b, output);
+        add_bias(size1, size2, input_0, input_1, output_0);
+    } else if (size2 % size1 == 0) {
+        add_bias(size2, size1, input_1, input_0, output_0);
     } else {
-        /* sizes don't match any known pattern — just do element-wise up to min */
+        // sizes don't match any known pattern — add up to min size
         int n = size1 < size2 ? size1 : size2;
         for (int i = 0; i < n; i++)
-            output[i] = a[i] + b[i];
+            output_0[i] = input_0[i] + input_1[i];
     }
+}
+
+// =============================================================================
+// Hierarchical versions — called once per element by PREESM
+// =============================================================================
+
+void add_same_neuron(float* input_0, float* input_1, float* output_0) {
+    output_0[0] = input_0[0] + input_1[0];
+}
+
+void add_bias_neuron(float* input_0, float* input_1, float* output_0) { 
+    output_0[0] = input_0[0] + input_1[0];
+}
+
+void add_scalar_neuron(float* input_0, float* input_1, float* output_0) {
+    output_0[0] = input_0[0] + input_1[0];
+}
+
+void add_generic_neuron(float* input_0, float* input_1, float* output_0) {
+    output_0[0] = input_0[0] + input_1[0];
 }

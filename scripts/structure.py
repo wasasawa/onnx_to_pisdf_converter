@@ -35,6 +35,7 @@ class OpType(Enum):
     
     # Shape
     RESHAPE = auto()
+
     FLATTEN = auto()
     CONCAT = auto()
     TRANSPOSE = auto()   
@@ -106,6 +107,8 @@ OPTYPE_TO_PI = {
     OpType.SOFTMAX: "Algo/softmax.pi",
     
     OpType.RESHAPE: "Algo/reshape.pi",
+    
+
     OpType.FLATTEN: "Algo/flatten.pi",
     OpType.CONCAT: "Algo/concat.pi",
     OpType.TRANSPOSE: "Algo/transpose.pi", 
@@ -125,10 +128,10 @@ OPTYPE_TO_PI = {
 }
 
 OPTYPE_TO_H = {
-    OpType.RELU: "Code/include/relu.h",
-    OpType.SIGMOID: "Code/include/sigmoid.h",
-    OpType.TANH: "Code/include/tanh.h",
-    OpType.DROPOUT: "Code/include/dropout.h",
+    OpType.RELU: "Code/include/ops.h",
+    OpType.SIGMOID: "Code/include/ops.h",
+    OpType.TANH: "Code/include/ops.h",
+    OpType.DROPOUT: "Code/include/ops.h",
     
     OpType.ADD_SAME: "Code/include/add.h",
     OpType.ADD_BIAS: "Code/include/add.h",
@@ -136,18 +139,19 @@ OPTYPE_TO_H = {
     OpType.ADD_GENERIC: "Code/include/add.h",
     
     OpType.CONV2D: "Code/include/conv2d.h",
-    OpType.CONV2D_BIAS: "Code/include/conv2d_bias.h",
+    OpType.CONV2D_BIAS: "Code/include/conv2d.h",
     OpType.MAXPOOL2D: "Code/include/maxpool2d.h",
     OpType.AVGPOOL2D: "Code/include/avgpool2d.h",
     OpType.GLOBAL_AVGPOOL: "Code/include/global_avgpool.h",
     
-    OpType.MATMUL: "Code/include/matmul.h",
-    OpType.SOFTMAX: "Code/include/softmax.h",
+    OpType.MATMUL: "Code/include/ops.h",
+    OpType.SOFTMAX: "Code/include/ops.h",
     
-    OpType.RESHAPE: "Code/include/reshape.h",
-    OpType.FLATTEN: "Code/include/flatten.h",
-    OpType.CONCAT: "Code/include/concat.h",
-    OpType.TRANSPOSE: "Code/include/transpose.h",
+    OpType.RESHAPE: "Code/include/ops.h",
+
+    OpType.FLATTEN: "Code/include/ops.h",
+    OpType.CONCAT: "Code/include/ops.h",
+    OpType.TRANSPOSE: "Code/include/ops.h",
 
     OpType.SLICE: "Code/include/slice.h",
     OpType.PAD: "Code/include/pad.h",
@@ -169,12 +173,13 @@ OPTYPE_TO_LOOP_FN = {
     OpType.TANH:    "tanh_op",        # NOT "tanh" — clashes with <math.h>
     OpType.DROPOUT: "dropout",
 
-    OpType.ADD_SAME:    "add",
-    OpType.ADD_BIAS:    "add",
-    OpType.ADD_SCALAR:  "add",
-    OpType.ADD_GENERIC: "add",
+    OpType.ADD_SAME:    "add_same",
+    OpType.ADD_BIAS:    "add_bias",
+    OpType.ADD_SCALAR:  "add_scalar",
+    OpType.ADD_GENERIC: "add_generic",
 
     OpType.CONV2D:         "conv2d",
+    OpType.CONV2D_BIAS:    "conv2d_bias",
     OpType.MAXPOOL2D:      "maxpool2d",
     OpType.AVGPOOL2D:      "avgpool2d",
     OpType.GLOBAL_AVGPOOL: "global_avgpool",
@@ -184,6 +189,7 @@ OPTYPE_TO_LOOP_FN = {
     OpType.GEMM:     "gemm",
 
     OpType.RESHAPE:   "reshape",
+
     OpType.FLATTEN:   "flatten",
     OpType.CONCAT:    "concat",
     OpType.TRANSPOSE: "transpose",

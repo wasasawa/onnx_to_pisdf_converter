@@ -3,6 +3,28 @@ from xml.dom.minidom import parseString
 from structure import *
 from parser import *
 
+
+# =============================================================================
+# Ops that have multiple versions depending on tensor shapes/weights at runtime.
+# 
+# Called after all inputs/weights are linked.
+# =============================================================================
+RUNTIME_REFINEMENTS = {
+    # ADD: refine based on the size of the two inputs
+    OpType.ADD_GENERIC: lambda actor: (
+        OpType.ADD_SAME   if actor.inputs[0][1].size == actor.inputs[1][1].size else
+        OpType.ADD_SCALAR if actor.inputs[1][1].size == 1                        else
+        OpType.ADD_BIAS   if actor.inputs[0][1].size % actor.inputs[1][1].size == 0 else
+        OpType.ADD_GENERIC
+    ) if len(actor.inputs) >= 2 else OpType.ADD_GENERIC,
+
+    # CONV: refine based on whether a bias weight is present
+    OpType.CONV2D: lambda actor: (
+        OpType.CONV2D_BIAS if len(actor.weights) >= 2 else OpType.CONV2D
+    ),
+}
+
+
 # -------------------------------------------------------------------------
 # Build a dtype lookup for initializer tensors.
 # All other tensors (activations) are float by default.
@@ -92,89 +114,6 @@ OPTIONAL_INPUTS = {
     },
 }
 
-def get_pi_file_for_actor(actor: IRActor) -> str:
-    """
-    Select the appropriate .pi file for an actor.
-    For most ops this is straightforward from OPTYPE_TO_PI.
-    Special cases:
-        - CONV: depends on whether bias input is present
-        - ADD: depends on the size pattern of the two inputs
-    """
-
-    # -------------------------------------------------------------------------
-    # CONV: check if bias input is present (3rd input)
-    # -------------------------------------------------------------------------
-    if actor.op_type in (OpType.CONV2D, OpType.CONV2D_BIAS):
-        has_bias = len(actor.inputs) >= 3
-        return "Algo/conv2d_bias.pi" if has_bias else "Algo/conv2d.pi"
-
-    # -------------------------------------------------------------------------
-    # ADD: detect pattern from linked input tensor sizes
-    # -------------------------------------------------------------------------
-    elif actor.op_type in (OpType.ADD_SAME, OpType.ADD_BIAS, OpType.ADD_SCALAR, OpType.ADD_GENERIC):
-        t1 = actor.inputs[0][1] if len(actor.inputs) > 0 else None
-        t2 = actor.inputs[1][1] if len(actor.inputs) > 1 else None
-
-        size1 = t1.size if t1 else 0
-        size2 = t2.size if t2 else 0
-
-        if size1 == size2:
-            return "Algo/add_same.pi"
-        elif size2 == 1:
-            return "Algo/add_scalar.pi"
-        elif size1 > size2 and size2 > 0 and size1 % size2 == 0:
-            return "Algo/add_bias.pi"
-        else:
-            return "Algo/add_generic.pi"
-
-    # -------------------------------------------------------------------------
-    # Everything else: straight lookup from the mapping table
-    # -------------------------------------------------------------------------
-    return OPTYPE_TO_PI.get(actor.op_type, "")
-
-
-def get_src_file_for_actor(actor: IRActor, is_header: bool) -> str:
-    """
-    Select the appropriate src file for an actor.
-    For most ops this is straightforward from OPTYPE_TO_PI or OPTYPE_TO_h.
-    Special cases:
-        - CONV: depends on whether bias input is present
-        - ADD: depends on the size pattern of the two inputs
-    """
-
-    # -------------------------------------------------------------------------
-    # CONV: check if bias input is present (3rd input)
-    # -------------------------------------------------------------------------
-    if actor.op_type in (OpType.CONV2D, OpType.CONV2D_BIAS):
-        has_bias = len(actor.inputs) >= 3
-        if is_header:
-            return "Code/include/conv2d_bias.h" if has_bias else "Code/include/conv2d.h"
-        return "Algo/conv2d_bias.pi" if has_bias else "Algo/conv2d.pi"
-
-    # -------------------------------------------------------------------------
-    # ADD: detect pattern from linked input tensor sizes
-    # -------------------------------------------------------------------------
-    elif actor.op_type in (OpType.ADD_SAME, OpType.ADD_BIAS, OpType.ADD_SCALAR, OpType.ADD_GENERIC):
-        t1 = actor.inputs[0][1] if len(actor.inputs) > 0 else None
-        t2 = actor.inputs[1][1] if len(actor.inputs) > 1 else None
-
-        size1 = t1.size if t1 else 0
-        size2 = t2.size if t2 else 0
-
-        if size1 == size2:
-            return "Code/include/add_same.h" if is_header else "Algo/add_same.pi"
-        elif size2 == 1:
-            return "Code/include/add_scalar.h" if is_header else "Algo/add_scalar.pi"
-        elif size1 > size2 and size2 > 0 and size1 % size2 == 0:
-            return "Code/include/add_bias.h" if is_header else "Algo/add_bias.pi"
-        else:
-            return "Code/include/add_generic.h" if is_header else "Algo/add_generic.pi"    
-
-    # -------------------------------------------------------------------------
-    # Everything else: straight lookup from the mapping table
-    # -------------------------------------------------------------------------
-    return OPTYPE_TO_H.get(actor.op_type, "") if is_header else OPTYPE_TO_PI.get(actor.op_type, "")
-
 
 def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dict:
     """
@@ -190,8 +129,8 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     def output_tensor(idx) -> Optional[IRTensor]:
         return actor.outputs[idx][1] if idx < len(actor.outputs) else None
     def weight_tensor(idx) -> Optional[IRTensor]:
-        return actor.weights[idx][1] if idx < len(actor.weights) else None
-
+        weights = list(actor.weights)
+        return weights[idx][1] if idx < len(weights) else None
     # =========================================================================
     # RELU, SIGMOID, TANH, DROPOUT
     # Params: size
@@ -226,6 +165,14 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
         input_t  = input_tensor(0)
         weight_t = weight_tensor(0)   # W is always an initializer → stored in actor.weights
         output_t = output_tensor(0)
+
+        print(f"[DEBUG-------] {actor.unique_name}: weight_t={weight_t}, weights={actor.weights}")
+
+        weights = actor.weights
+    
+        print(actor.weights[0][1].shape)
+        print(type(weights))
+        print(weights[0])
 
         if weight_t and len(weight_t.shape) >= 4:
             params["depthOutput"] = weight_t.shape[0]
@@ -364,14 +311,14 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     # shapeSize = number of dimensions in the target shape (e.g. [1, 512] -> 2)
     # =========================================================================
     elif op == OpType.RESHAPE:
-        input_t  = input_tensor(0)
+        input_t  = input_tensor(0)                                    # from actor.inputs
         output_t = output_tensor(0)
-        if input_t:
-            params["inputSize"]  = input_t.size
+        shape_t  = actor.weights[0][1] if actor.weights else None     # from actor.weights
         if output_t:
             params["outputSize"] = output_t.size
-            params["shapeSize"]  = len(output_t.shape)  # number of dims
-
+        if shape_t:
+            params["shapeSize"]  = shape_t.size
+    
     # =========================================================================
     # FLATTEN
     # Params: inputSize, outputSize
@@ -417,7 +364,7 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
             perm = list(range(len(t.shape) - 1, -1, -1))
         for idx, p in enumerate(perm):
             params[f"perm_{idx}"] = p
-
+    
     # =========================================================================
     # GEMM 
     # Params:
@@ -550,8 +497,9 @@ def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype
     range_fill_counter += 1
     return tensor
 
-def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
+def fill_IRGraph(model_data, shapes, offset_map, hierarchial) -> IRGraph:
     graph = IRGraph(model_data["name"])
+    source_map = OPTYPE_TO_PI if hierarchial else OPTYPE_TO_H
 
     initializer_dtype_map = {
         name: _ONNX_DTYPE_TO_STR.get(dtype_int, "float")
@@ -606,10 +554,10 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
                     print(f"  [WARN] Actor '{actor.unique_name}': weight tensor '{tensor_name}' not found in graph")
                     continue
                 weight_tensor.declare_weight()
-                port_name   = f"weight_{weight_idx}"
+                port_name   = f"input_{input_idx}"
                 weight_port = actor.add_weight(port_name, weight_tensor)
                 graph.link(weight_tensor, None, weight_port)  # use returned port directly
-                weight_idx += 1
+                input_idx += 1
                         
         # Same but for outputs
         for idx, tensor_name in enumerate(node["outputs"]):
@@ -646,16 +594,20 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
                 # Add as weight port – consistent naming with when the real tensor
                 # is a binary initializer.  Note: declare_weight() is NOT called
                 # because this tensor is synthetic (not from the weights binary).
-                port_name   = f"weight_{weight_idx}"
+                port_name   = f"input_{input_idx}"
                 weight_port = actor.add_weight(port_name, tensor)
                 graph.link(tensor, None, weight_port)
-                weight_idx += 1
+                input_idx += 1
             else:
                 port_name  = f"input_{input_idx}"
                 input_port = actor.add_input(port_name, tensor)
                 graph.link(tensor, None, input_port)
                 input_idx += 1
-                
+
+        refine = RUNTIME_REFINEMENTS.get(actor.op_type)
+        if refine:
+            actor.op_type = refine(actor)
+    
     # =========================================================================
     # Handle params, first extract from attributes, then add to actor class
     # =========================================================================            
@@ -664,8 +616,9 @@ def fill_IRGraph(model_data, shapes, offset_map) -> IRGraph:
         for param_name, value in raw_params.items():
             ir_param = graph.get_or_create_param(param_name, value)
             actor.add_param(param_name, ir_param)
-        #actor.source = get_pi_file_for_actor(actor) 
-        # actor.source = "Code/include/test.h"
+        actor.source = source_map.get(actor.op_type, "Code/include/unknown.h")
+       
+       
     # ===============================================================================================
     # I/O Actors | load_weights and split_weights & fork actors for weights (one per dtype section)
     # ===============================================================================================
@@ -923,47 +876,48 @@ def _generate_actor_node(graph_el, actor: IRActor):
     # Loop function name: the exact C function PREESM calls for this actor.
     # Looked up from OPTYPE_TO_LOOP_FN; falls back to "" for structural actors
     # (fork / broadcast) which PREESM handles internally without a loop fn.
-    loop_fn = OPTYPE_TO_LOOP_FN.get(actor.op_type, "")
-
-    # --- <loop> ---
-    loop_el = SubElement(actor_el, "loop", attrib={"name": loop_fn})
-
-    # config params first
-    for port, param in actor.params:
-        SubElement(loop_el, "param", attrib={
-            "direction": "IN",
-            "isConfig":  "true",
-            "name":      port.name,
-            "type":      "int",
-        })
-
-    # data inputs
-    for port, tensor in actor.inputs:
-        SubElement(loop_el, "param", attrib={
-            "direction": "IN",
-            "isConfig":  "false",
-            "name":      port.name,
-            "type":      tensor.dtype,
-        })
-
-    # weight inputs
-    for port, tensor in actor.weights:
-        SubElement(loop_el, "param", attrib={
-            "direction": "IN",
-            "isConfig":  "false",
-            "name":      port.name,
-            "type":      tensor.dtype,
-        })
-
-    # outputs
-    for port, tensor in actor.outputs:
-        SubElement(loop_el, "param", attrib={
-            "direction": "OUT",
-            "isConfig":  "false",
-            "name":      port.name,
-            "type":      tensor.dtype,
-        })
-
+    if not actor.source.endswith(".pi"):
+        loop_fn = OPTYPE_TO_LOOP_FN.get(actor.op_type, "")
+    
+        # --- <loop> ---
+        loop_el = SubElement(actor_el, "loop", attrib={"name": loop_fn})
+    
+        # config params first
+        for port, param in actor.params:
+            SubElement(loop_el, "param", attrib={
+                "direction": "IN",
+                "isConfig":  "true",
+                "name":      port.name,
+                "type":      "int",
+            })
+    
+        # data inputs
+        for port, tensor in actor.inputs:
+            SubElement(loop_el, "param", attrib={
+                "direction": "IN",
+                "isConfig":  "false",
+                "name":      port.name,
+                "type":      tensor.dtype,
+            })
+    
+        # weight inputs
+        for port, tensor in actor.weights:
+            SubElement(loop_el, "param", attrib={
+                "direction": "IN",
+                "isConfig":  "false",
+                "name":      port.name,
+                "type":      tensor.dtype,
+            })
+    
+        # outputs
+        for port, tensor in actor.outputs:
+            SubElement(loop_el, "param", attrib={
+                "direction": "OUT",
+                "isConfig":  "false",
+                "name":      port.name,
+                "type":      tensor.dtype,
+            })
+    
     # --- <port> elements ---
     for port, param in actor.params:
         SubElement(actor_el, "port", attrib={

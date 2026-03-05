@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+    <graph edgedefault="directed">
+        <data key="name">matmul</data>
+        <node id="M" kind="cfg_in_iface" />
+        <node id="K" kind="cfg_in_iface" />
+        <node id="N" kind="cfg_in_iface" />
+        <node id="input_0" kind="src">
+            <port annotation="NONE" expr="M * K" kind="output" name="input_0" />
+        </node>
+        <node id="input_1" kind="src">
+            <port annotation="NONE" expr="N * K" kind="output" name="input_1" />
+        </node>
+        <node id="output_0" kind="snk">
+            <port annotation="NONE" expr="M * N" kind="input" name="output_0" />
+        </node>
+        <node id="matmul_neuron" kind="actor">
+            <data key="graph_desc">Code/include/ops.h</data>
+            <loop name="matmul_neuron">
+                <param direction="IN" isConfig="true" name="M" type="int" />
+                <param direction="IN" isConfig="true" name="K" type="int" />
+                <param direction="IN" isConfig="true" name="N" type="int" />
+                <param direction="IN" isConfig="false" name="input_0" type="float" />
+                <param direction="IN" isConfig="false" name="input_1" type="float" />
+                <param direction="OUT" isConfig="false" name="output_0" type="float" />
+            </loop>
+            <port kind="cfg_input" name="M" />
+            <port kind="cfg_input" name="K" />
+            <port kind="cfg_input" name="N" />
+            <port annotation="NONE" expr="K" kind="input" name="input_0" />
+            <port annotation="NONE" expr="K*N" kind="input" name="input_1" />
+            <port annotation="NONE" expr="N" kind="output" name="output_0" />
+        </node>
+        <edge kind="fifo" type="float" source="input_0" sourceport="input_0" target="matmul_neuron" targetport="input_0" />
+        <edge kind="fifo" type="float" source="input_1" sourceport="input_1" target="matmul_neuron" targetport="input_1" />
+        <edge kind="fifo" type="float" source="matmul_neuron" sourceport="output_0" target="output_0" targetport="output_0" />
+        <edge kind="dependency" source="M" target="matmul_neuron" targetport="M" />
+        <edge kind="dependency" source="M" target="input_0" />
+        <edge kind="dependency" source="M" target="output_0" />
+        <edge kind="dependency" source="K" target="matmul_neuron" targetport="K" />
+        <edge kind="dependency" source="K" target="input_0" />
+        <edge kind="dependency" source="K" target="input_1" />
+        <edge kind="dependency" source="N" target="matmul_neuron" targetport="N" />
+        <edge kind="dependency" source="N" target="input_1" />
+        <edge kind="dependency" source="N" target="output_0" />
+    </graph>
+</graphml>

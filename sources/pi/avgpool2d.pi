@@ -1,0 +1,81 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+    <graph edgedefault="directed">
+        <data key="name">avgpool2d</data>
+        <node id="depthInput" kind="cfg_in_iface" />
+        <node id="inputHeight" kind="cfg_in_iface" />
+        <node id="inputWidth" kind="cfg_in_iface" />
+        <node id="poolHeight" kind="cfg_in_iface" />
+        <node id="poolWidth" kind="cfg_in_iface" />
+        <node id="strideHeight" kind="cfg_in_iface" />
+        <node id="strideWidth" kind="cfg_in_iface" />
+        <node id="padTop" kind="cfg_in_iface" />
+        <node id="padLeft" kind="cfg_in_iface" />
+        <node id="padBottom" kind="cfg_in_iface" />
+        <node id="padRight" kind="cfg_in_iface" />
+        <node id="outputHeight" kind="cfg_in_iface" />
+        <node id="outputWidth" kind="cfg_in_iface" />
+        <node id="input_0" kind="src">
+            <port annotation="NONE" expr="depthInput * inputHeight * inputWidth" kind="output" name="input_0" />
+        </node>
+        <node id="output_0" kind="snk">
+            <port annotation="NONE" expr="depthInput * outputHeight * outputWidth" kind="input" name="output_0" />
+        </node>
+        <node id="avgpool2d_neuron" kind="actor">
+            <data key="graph_desc">Code/include/avgpool2d.h</data>
+            <loop name="avgpool2d_neuron">
+                <param direction="IN" isConfig="true" name="depthInput" type="int" />
+                <param direction="IN" isConfig="true" name="inputHeight" type="int" />
+                <param direction="IN" isConfig="true" name="inputWidth" type="int" />
+                <param direction="IN" isConfig="true" name="poolHeight" type="int" />
+                <param direction="IN" isConfig="true" name="poolWidth" type="int" />
+                <param direction="IN" isConfig="true" name="strideHeight" type="int" />
+                <param direction="IN" isConfig="true" name="strideWidth" type="int" />
+                <param direction="IN" isConfig="true" name="padTop" type="int" />
+                <param direction="IN" isConfig="true" name="padLeft" type="int" />
+                <param direction="IN" isConfig="true" name="padBottom" type="int" />
+                <param direction="IN" isConfig="true" name="padRight" type="int" />
+                <param direction="IN" isConfig="true" name="outputHeight" type="int" />
+                <param direction="IN" isConfig="true" name="outputWidth" type="int" />
+                <param direction="IN" isConfig="false" name="input_0" type="float" />
+                <param direction="OUT" isConfig="false" name="output_0" type="float" />
+            </loop>
+            <port kind="cfg_input" name="depthInput" />
+            <port kind="cfg_input" name="inputHeight" />
+            <port kind="cfg_input" name="inputWidth" />
+            <port kind="cfg_input" name="poolHeight" />
+            <port kind="cfg_input" name="poolWidth" />
+            <port kind="cfg_input" name="strideHeight" />
+            <port kind="cfg_input" name="strideWidth" />
+            <port kind="cfg_input" name="padTop" />
+            <port kind="cfg_input" name="padLeft" />
+            <port kind="cfg_input" name="padBottom" />
+            <port kind="cfg_input" name="padRight" />
+            <port kind="cfg_input" name="outputHeight" />
+            <port kind="cfg_input" name="outputWidth" />
+            <port annotation="NONE" expr="inputHeight * inputWidth" kind="input" name="input_0" />
+            <port annotation="NONE" expr="outputHeight * outputWidth" kind="output" name="output_0" />
+        </node>
+        <edge kind="fifo" type="float" source="input_0" sourceport="input_0" target="avgpool2d_neuron" targetport="input_0" />
+        <edge kind="fifo" type="float" source="avgpool2d_neuron" sourceport="output_0" target="output_0" targetport="output_0" />
+        <edge kind="dependency" source="depthInput" target="avgpool2d_neuron" targetport="depthInput" />
+        <edge kind="dependency" source="depthInput" target="input_0" />
+        <edge kind="dependency" source="depthInput" target="output_0" />
+        <edge kind="dependency" source="inputHeight" target="avgpool2d_neuron" targetport="inputHeight" />
+        <edge kind="dependency" source="inputHeight" target="input_0" />
+        <edge kind="dependency" source="inputWidth" target="avgpool2d_neuron" targetport="inputWidth" />
+        <edge kind="dependency" source="inputWidth" target="input_0" />
+        <edge kind="dependency" source="poolHeight" target="avgpool2d_neuron" targetport="poolHeight" />
+        <edge kind="dependency" source="poolWidth" target="avgpool2d_neuron" targetport="poolWidth" />
+        <edge kind="dependency" source="strideHeight" target="avgpool2d_neuron" targetport="strideHeight" />
+        <edge kind="dependency" source="strideWidth" target="avgpool2d_neuron" targetport="strideWidth" />
+        <edge kind="dependency" source="padTop" target="avgpool2d_neuron" targetport="padTop" />
+        <edge kind="dependency" source="padLeft" target="avgpool2d_neuron" targetport="padLeft" />
+        <edge kind="dependency" source="padBottom" target="avgpool2d_neuron" targetport="padBottom" />
+        <edge kind="dependency" source="padRight" target="avgpool2d_neuron" targetport="padRight" />
+        <edge kind="dependency" source="outputHeight" target="avgpool2d_neuron" targetport="outputHeight" />
+        <edge kind="dependency" source="outputHeight" target="output_0" />
+        <edge kind="dependency" source="outputWidth" target="avgpool2d_neuron" targetport="outputWidth" />
+        <edge kind="dependency" source="outputWidth" target="output_0" />
+    </graph>
+</graphml>

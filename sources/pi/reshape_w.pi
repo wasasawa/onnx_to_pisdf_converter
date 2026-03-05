@@ -1,0 +1,35 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+    <graph edgedefault="directed">
+        <data key="name">reshape_w</data>
+        <node id="outputSize" kind="cfg_in_iface" />
+        <node id="weight_0" kind="src">
+            <port annotation="NONE" expr="outputSize" kind="output" name="weight_0" />
+        </node>
+        <node id="weight_1" kind="src">
+            <port annotation="NONE" expr="shapeSize" kind="output" name="weight_1" />
+        </node>
+        <node id="output_0" kind="snk">
+            <port annotation="NONE" expr="outputSize" kind="input" name="output_0" />
+        </node>
+        <node id="reshape_w_neuron" kind="actor">
+            <data key="graph_desc">Code/include/ops.h</data>
+            <loop name="reshape_w_neuron">
+                <param direction="IN" isConfig="true" name="outputSize" type="int" />
+                <param direction="IN" isConfig="false" name="weight_0" type="float" />
+                <param direction="IN" isConfig="false" name="weight_1" type="int64" />
+                <param direction="OUT" isConfig="false" name="output_0" type="float" />
+            </loop>
+            <port kind="cfg_input" name="outputSize" />
+            <port annotation="NONE" expr="1" kind="input" name="weight_0" />
+            <port annotation="NONE" expr="1" kind="input" name="weight_1" />
+            <port annotation="NONE" expr="1" kind="output" name="output_0" />
+        </node>
+        <edge kind="fifo" type="float" source="weight_0" sourceport="weight_0" target="reshape_w_neuron" targetport="weight_0" />
+        <edge kind="fifo" type="int64" source="weight_1" sourceport="weight_1" target="reshape_w_neuron" targetport="weight_1" />
+        <edge kind="fifo" type="float" source="reshape_w_neuron" sourceport="output_0" target="output_0" targetport="output_0" />
+        <edge kind="dependency" source="outputSize" target="reshape_w_neuron" targetport="outputSize" />
+        <edge kind="dependency" source="outputSize" target="weight_0" />
+        <edge kind="dependency" source="outputSize" target="output_0" />
+    </graph>
+</graphml>

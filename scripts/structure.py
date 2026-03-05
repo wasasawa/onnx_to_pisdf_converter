@@ -48,10 +48,15 @@ class OpType(Enum):
     LOAD_WEIGHTS = auto()
     SPLIT_WEIGHTS = auto()
     BROADCAST = auto()
+    JOIN = auto()
+    FORK = auto()
     OUTPUT = auto()
+    ZERO = auto()
+    SINK = auto()
 
     CONSTANT_FILL = auto()
     RANGE_FILL = auto()  # Generates [start, start+step, ..., start+(size-1)*step]
+    POLICYNET = auto()
 
 class PortDir(Enum):
     IN = auto()
@@ -122,9 +127,12 @@ OPTYPE_TO_PI = {
     OpType.LOAD_WEIGHTS: "",
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
+    OpType.FORK: "",
+    OpType.JOIN: "",
     OpType.OUTPUT: "",
     OpType.CONSTANT_FILL: "",
     OpType.RANGE_FILL: "",
+    OpType.POLICYNET: "",
 }
 
 OPTYPE_TO_H = {
@@ -162,9 +170,14 @@ OPTYPE_TO_H = {
     OpType.LOAD_WEIGHTS: "Code/include/load_weights.h",
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST: "",
+    OpType.FORK: "",
+    OpType.JOIN: "",
     OpType.OUTPUT: "Code/include/output.h",
     OpType.CONSTANT_FILL: "Code/include/utilities.h",
     OpType.RANGE_FILL: "Code/include/utilities.h",
+    OpType.POLICYNET: "Code/include/utilities.h",
+    OpType.ZERO: "Code/include/utilities.h",
+    OpType.SINK: "Code/include/utilities.h",
 }
 
 OPTYPE_TO_LOOP_FN = {
@@ -201,13 +214,18 @@ OPTYPE_TO_LOOP_FN = {
     OpType.LOAD_INPUT:    "load_cifar_image",  # defined in image_loader.cpp
     OpType.LOAD_WEIGHTS:  "loadWeights",        # defined in weight_loader.cpp
     OpType.OUTPUT:        "print_result",        # defined in output.cpp
+    OpType.ZERO: "zero",
+    OpType.SINK: "sink",
 
     OpType.CONSTANT_FILL: "constant_fill",
     OpType.RANGE_FILL:    "range_fill",
+    OpType.POLICYNET: "policy_network",
 
     # Structural actors — no loop function.
     OpType.SPLIT_WEIGHTS: "",
     OpType.BROADCAST:     "",
+    OpType.FORK: "",
+    OpType.JOIN: "",
 }
 
 # =============================================================================

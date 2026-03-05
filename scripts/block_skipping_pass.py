@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
+import os
 from typing import Optional
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom.minidom import parseString
@@ -556,7 +557,7 @@ def _insert_weight_gate(
     # ── Gate_Weights fork ─────────────────────────────────────────────────
     gate_name  = f"Gate_{label}"
     gate_actor = IRActor(
-        name=gate_name, op_type=OpType.BROADCAST,
+        name=gate_name, op_type=OpType.FORK,
         unique_name=gate_name, source="",
         attributes={"_kind": "gate"},
     )
@@ -597,7 +598,7 @@ def _insert_weight_gate(
     # ── Sink actor ────────────────────────────────────────────────────────
     sink_name  = f"Sink_{label}"
     sink_actor = IRActor(
-        name=sink_name, op_type=OpType.BROADCAST,
+        name=sink_name, op_type=OpType.SINK,
         unique_name=sink_name, source="Code/include/utilities.h",
         attributes={"_kind": "sink", "_loop_fn": "sink"},
     )
@@ -638,7 +639,7 @@ def _insert_zero_and_select(
     # ── Zero actor ────────────────────────────────────────────────────────
     zero_name  = f"zero_block{block_idx}"
     zero_actor = IRActor(
-        name=zero_name, op_type=OpType.BROADCAST,
+        name=zero_name, op_type=OpType.ZERO,
         unique_name=zero_name, source="Code/include/utilities.h",
         attributes={"_kind": "zero", "_loop_fn": "zero"},
     )
@@ -663,7 +664,7 @@ def _insert_zero_and_select(
     # ── Select (join) actor ───────────────────────────────────────────────
     select_name  = f"select_block{block_idx}"
     select_actor = IRActor(
-        name=select_name, op_type=OpType.BROADCAST,
+        name=select_name, op_type=OpType.JOIN,
         unique_name=select_name, source="",
         attributes={"_kind": "select"},   # emitted as kind="join" in XML
     )
@@ -776,12 +777,12 @@ def _insert_policy_network(graph: IRGraph, keep_params: list[IRParam]) -> IRActo
     """
     actor = IRActor(
         name="policyNetwork",
-        op_type=OpType.BROADCAST,          # closest available op; overridden by _kind
+        op_type=OpType.POLICYNET,         
         unique_name="policyNetwork",
-        source="Code/include/utilities.h",
+        source=OPTYPE_TO_H.get(OpType.POLICYNET, "Code/include/utilities.h"),
         attributes={
             "_kind"       : "policy",
-            "_loop_fn"    : "setCombination",
+            "_loop_fn"    :  OPTYPE_TO_LOOP_FN.get(OpType.POLICYNET, "setCombination"),
             "_cfg_outputs": keep_params,   # ordered list of IRParam
         },
     )
@@ -851,7 +852,19 @@ def _emit_node(graph_el: Element, actor: IRActor,
     node = SubElement(graph_el, "node", attrib={
         "id": actor.unique_name, "kind": xml_kind, "period": "0",
     })
-    SubElement(node, "data", attrib={"key": "graph_desc"}).text = actor.source
+
+    is_dynamic = any(p.name == "keep" for p, _ in actor.params)
+    is_hierarchical = isinstance(actor.source, str) and actor.source.endswith(".pi")
+    is_special = actor.attributes.get("_kind") in _SPECIAL_KIND_TO_XML_KIND
+
+    source = actor.source
+    if is_dynamic and is_hierarchical and not is_special:
+        dirname, basename = os.path.split(actor.source)
+        if not basename.startswith("dy_"):
+            basename = f"dy_{basename}"
+        source = os.path.join(dirname, basename) if dirname else basename
+
+    SubElement(node, "data", attrib={"key": "graph_desc"}).text = source
     loop_el = SubElement(node, "loop", attrib={"name": loop_fn})
 
     for port, _ in actor.params:
@@ -941,8 +954,10 @@ def _generate_actor_node(graph_el: Element, actor: IRActor) -> None:
     # Standard converter actor kinds
     if actor.op_type == OpType.BROADCAST:
         kind = "broadcast"
-    elif actor.op_type == OpType.SPLIT_WEIGHTS:
+    elif actor.op_type == OpType.SPLIT_WEIGHTS or actor.op_type == OpType.FORK:
         kind = "fork"
+    elif actor.op_type == OpType.JOIN:
+        kind = "join"
     else:
         kind = "actor"
     _emit_node(graph_el, actor, kind, OPTYPE_TO_LOOP_FN.get(actor.op_type, ""))

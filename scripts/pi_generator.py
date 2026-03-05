@@ -219,6 +219,14 @@ SKIP_OPS = {
     OpType.OUTPUT,
     OpType.SPLIT_WEIGHTS,
     OpType.CONSTANT_FILL,
+    OpType.BROADCAST,
+    OpType.FORK,
+    OpType.JOIN,
+    OpType.ZERO,
+    OpType.SINK,
+    OpType.CONSTANT_FILL,
+    OpType.RANGE_FILL,
+    OpType.POLICYNET,
 }
 
 
@@ -250,8 +258,10 @@ def _get_actor_out_expr(rate_exprs: dict, port_name: str, fallback: int) -> str:
 
 
 def generate_pi_file(actor: IRActor, output_dir: str) -> str:
-    op_name    = _get_op_name(actor)
-    pi_path    = os.path.join(output_dir, f"{op_name}.pi")
+    op_name    = _get_op_name(actor) 
+    if any(p.name == "keep" for p, _ in actor.params):
+        op_name = f"dy_{op_name}"
+    pi_path    = os.path.join(output_dir, f"{op_name}.pi") # use PI dict?
     rate_exprs = RATE_EXPRESSIONS.get(op_name, {})
     loop_name  = OPTYPE_TO_LOOP_FN[actor.op_type]
     inner_name = f"{loop_name}_neuron"
@@ -406,10 +416,12 @@ def generate_pi_file(actor: IRActor, output_dir: str) -> str:
 def generate_all_pi_files(graph: IRGraph, output_dir: str = "../sources.pi"):
     seen = set()
     for actor in graph.actors:
-        if actor.op_type in SKIP_OPS:
+        if actor.op_type in SKIP_OPS :
             continue
         op_name = _get_op_name(actor)
-        if op_name not in seen:
+        is_dynamic = any(p.name == "keep" for p, _ in actor.params)
+        dynamic_key = f"dy_{op_name}" if is_dynamic else op_name
+        if dynamic_key not in seen:
             path = generate_pi_file(actor, output_dir)
             print(f"  Generated {path}")
-            seen.add(op_name)
+            seen.add(dynamic_key)

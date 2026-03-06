@@ -88,8 +88,8 @@ RATE_EXPRESSIONS = {
     # -------------------------------------------------------------------------
     "relu": {
         "src_rates":  {"input_0": "size"},
-        "inputs":     {"input_0": "1"},
-        "outputs":    {"output_0": "1"},
+        "inputs":     {"input_0": "size"},
+        "outputs":    {"output_0": "size"},
         "snk_rates":  {"output_0": "size"},
     },
     "sigmoid": {
@@ -131,8 +131,8 @@ RATE_EXPRESSIONS = {
     # -------------------------------------------------------------------------
     "add_same": {
         "src_rates":  {"input_0": "size1", "input_1": "size1"},
-        "inputs":     {"input_0": "1",     "input_1": "1"},
-        "outputs":    {"output_0": "1"},
+        "inputs":     {"input_0": "size1",     "input_1": "size1"},
+        "outputs":    {"output_0": "size1"},
         "snk_rates":  {"output_0": "size1"},
     },
     "add_bias": {
@@ -186,8 +186,8 @@ RATE_EXPRESSIONS = {
     },
     "flatten": {
         "src_rates":  {"input_0": "inputSize"},
-        "inputs":     {"input_0": "1"},
-        "outputs":    {"output_0": "1"},
+        "inputs":     {"input_0": "inputSize"},
+        "outputs":    {"output_0": "outputSize"},
         "snk_rates":  {"output_0": "outputSize"},
     },
 
@@ -209,6 +209,15 @@ RATE_EXPRESSIONS = {
         "inputs":     {"input_0": "1",     "input_1": "1"},
         "outputs":    {"output_0": "1"},
         "snk_rates":  {"output_0": "size1 + size2"},
+    },
+    # -------------------------------------------------------------------------
+    # gemm — 
+    # -------------------------------------------------------------------------
+    "gemm": {
+        "src_rates":  {"input_0": "M * K", "input_1": "K * N", "input_2": "sizeC"},
+        "inputs":     {"input_0": "M * K", "input_1": "K * N", "input_2": "sizeC"},
+        "outputs":    {"output_0": "M * N"},
+        "snk_rates":  {"output_0": "M * N"},
     },
 }
 

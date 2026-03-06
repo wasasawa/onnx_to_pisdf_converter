@@ -13,6 +13,9 @@ static void load_section(int offset, int size, void* output) {
     fread(output, 1, size, f);
     fclose(f);
 }
+void loadWeights(int offset, int size, void* output) {
+    load_section(offset, size, output);
+}
 
 void load_weights_float(int offset, int size, float* output) {
     load_section(offset, size, output);

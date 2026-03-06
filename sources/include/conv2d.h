@@ -5,26 +5,29 @@
 // Non-hierarchical — full convolution at once
 // =============================================================================
 void conv2d(
+    int depthOutput,      int depthInput,
     int sizeKernelHeight, int sizeKernelWidth,
     int strideHeight,     int strideWidth,
+    int dilationHeight,   int dilationWidth,
     int inputHeight,      int inputWidth,
     int padTop,           int padLeft,
     int padBottom,        int padRight,
     int outputHeight,     int outputWidth,
-    int depthInput,       int depthOutput,
     float* input_0, float* input_1, float* output_0
 );
 
 void conv2d_bias(
+    int depthOutput,      int depthInput,
     int sizeKernelHeight, int sizeKernelWidth,
     int strideHeight,     int strideWidth,
+    int dilationHeight,   int dilationWidth,
     int inputHeight,      int inputWidth,
     int padTop,           int padLeft,
     int padBottom,        int padRight,
     int outputHeight,     int outputWidth,
-    int depthInput,       int depthOutput,
     float* input_0, float* input_1, float* input_2, float* output_0
 );
+
 
 // =============================================================================
 // Hierarchical — one output channel per firing
@@ -33,24 +36,26 @@ void conv2d_bias(
 // output_0 is one output channel (outputHeight * outputWidth elements)
 // =============================================================================
 void conv2d_neuron(
+    int depthOutput,      int depthInput,
     int sizeKernelHeight, int sizeKernelWidth,
     int strideHeight,     int strideWidth,
+    int dilationHeight,   int dilationWidth,
     int inputHeight,      int inputWidth,
     int padTop,           int padLeft,
     int padBottom,        int padRight,
     int outputHeight,     int outputWidth,
-    int depthInput,	  int depthOutput,
     float* input_0, float* input_1, float* output_0
 );
 
 void conv2d_bias_neuron(
+    int depthOutput,      int depthInput,
     int sizeKernelHeight, int sizeKernelWidth,
     int strideHeight,     int strideWidth,
+    int dilationHeight,   int dilationWidth,
     int inputHeight,      int inputWidth,
     int padTop,           int padLeft,
     int padBottom,        int padRight,
     int outputHeight,     int outputWidth,
-    int depthInput,	  int depthOutput,
     float* input_0, float* input_1, float* input_2, float* output_0
 );
 

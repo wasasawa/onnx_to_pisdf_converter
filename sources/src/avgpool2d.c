@@ -1,53 +1,21 @@
 #include "avgpool2d.h"
 
-// =============================================================================
-// Non-hierarchical
-// =============================================================================
-void avgpool2d(
-    int depthInput,
+/* ----------------------------------------------------------------------------
+ * Inner kernel — one channel.
+ * countIncludePad = 0 → divide by number of valid (non-padded) pixels
+ * countIncludePad = 1 → always divide by poolHeight * poolWidth
+ * --------------------------------------------------------------------------*/
+static void _avgpool2d_channel(
     int inputHeight,  int inputWidth,
     int poolHeight,   int poolWidth,
     int strideHeight, int strideWidth,
     int padTop,       int padLeft,
-    int padBottom,    int padRight,
     int outputHeight, int outputWidth,
-    float* input_0,   float* output_0
+    int countIncludePad,
+    const float* in_ch, float* out_ch
 ) {
-    for (int c = 0; c < depthInput; c++) {
-        float* in_ch  = input_0  + c * inputHeight  * inputWidth;
-        float* out_ch = output_0 + c * outputHeight * outputWidth;
-        for (int oh = 0; oh < outputHeight; oh++) {
-            for (int ow = 0; ow < outputWidth; ow++) {
-                float sum   = 0.0f;
-                int   count = 0;
-                for (int kh = 0; kh < poolHeight; kh++) {
-                    for (int kw = 0; kw < poolWidth; kw++) {
-                        int ih = oh * strideHeight - padTop  + kh;
-                        int iw = ow * strideWidth  - padLeft + kw;
-                        if (ih >= 0 && ih < inputHeight && iw >= 0 && iw < inputWidth) {
-                            sum += in_ch[ih * inputWidth + iw];
-                            count++;
-                        }
-                    }
-                }
-                out_ch[oh * outputWidth + ow] = count > 0 ? sum / count : 0.0f;
-            }
-        }
-    }
-}
+    int pool_area = poolHeight * poolWidth;
 
-// =============================================================================
-// Hierarchical — one channel per firing
-// =============================================================================
-void avgpool2d_neuron(
-    int inputHeight,  int inputWidth,
-    int poolHeight,   int poolWidth,
-    int strideHeight, int strideWidth,
-    int padTop,       int padLeft,
-    int padBottom,    int padRight,
-    int outputHeight, int outputWidth,
-    float* input_0,   float* output_0
-) {
     for (int oh = 0; oh < outputHeight; oh++) {
         for (int ow = 0; ow < outputWidth; ow++) {
             float sum   = 0.0f;
@@ -56,34 +24,97 @@ void avgpool2d_neuron(
                 for (int kw = 0; kw < poolWidth; kw++) {
                     int ih = oh * strideHeight - padTop  + kh;
                     int iw = ow * strideWidth  - padLeft + kw;
-                    if (ih >= 0 && ih < inputHeight && iw >= 0 && iw < inputWidth) {
-                        sum += input_0[ih * inputWidth + iw];
+                    if ((unsigned)ih < (unsigned)inputHeight &&
+                        (unsigned)iw < (unsigned)inputWidth) {
+                        sum += in_ch[ih * inputWidth + iw];
                         count++;
                     }
                 }
             }
-            output_0[oh * outputWidth + ow] = count > 0 ? sum / count : 0.0f;
+            int divisor = countIncludePad ? pool_area : count;
+            out_ch[oh * outputWidth + ow] = divisor > 0 ? sum / divisor : 0.0f;
         }
     }
 }
 
 // =============================================================================
-// Global average pool — average all spatial positions per channel
+// Non-hierarchical
 // =============================================================================
-void global_avgpool(int depth, int spatialSize, float* input_0, float* output_0) {
-    for (int c = 0; c < depth; c++) {
-        float sum = 0.0f;
-        for (int i = 0; i < spatialSize; i++)
-            sum += input_0[c * spatialSize + i];
-        output_0[c] = sum / spatialSize;
+
+void avgpool2d(
+    int depthInput,
+    int inputHeight,  int inputWidth,
+    int poolHeight,   int poolWidth,
+    int strideHeight, int strideWidth,
+    int padTop,       int padLeft,
+    int padBottom,    int padRight,
+    int outputHeight, int outputWidth,
+    int countIncludePad,
+    float* input_0, float* output_0
+) {
+    int in_spatial  = inputHeight  * inputWidth;
+    int out_spatial = outputHeight * outputWidth;
+
+    for (int c = 0; c < depthInput; c++) {
+        _avgpool2d_channel(
+            inputHeight, inputWidth,
+            poolHeight, poolWidth,
+            strideHeight, strideWidth,
+            padTop, padLeft,
+            outputHeight, outputWidth,
+            countIncludePad,
+            input_0  + c * in_spatial,
+            output_0 + c * out_spatial
+        );
     }
 }
 
+// =============================================================================
 // Hierarchical — one channel per firing
-// input_0 is spatialSize elements, output_0 is 1 element
+// =============================================================================
+
+void avgpool2d_neuron(
+    int depthInput,
+    int inputHeight,  int inputWidth,
+    int poolHeight,   int poolWidth,
+    int strideHeight, int strideWidth,
+    int padTop,       int padLeft,
+    int padBottom,    int padRight,
+    int outputHeight, int outputWidth,
+    int countIncludePad,
+    float* input_0, float* output_0
+) {
+    _avgpool2d_channel(
+        inputHeight, inputWidth,
+        poolHeight, poolWidth,
+        strideHeight, strideWidth,
+        padTop, padLeft,
+        outputHeight, outputWidth,
+        countIncludePad,
+        input_0, output_0
+    );
+}
+
+// =============================================================================
+// Global average pool
+// =============================================================================
+
+void global_avgpool(int depth, int spatialSize, float* input_0, float* output_0) {
+    float inv = 1.0f / spatialSize;
+    for (int c = 0; c < depth; c++) {
+        const float* in_ch = input_0 + c * spatialSize;
+        float sum = 0.0f;
+        for (int i = 0; i < spatialSize; i++)
+            sum += in_ch[i];
+        output_0[c] = sum * inv;
+    }
+}
+
+/* Hierarchical — one channel per firing */
 void global_avgpool_neuron(int spatialSize, float* input_0, float* output_0) {
     float sum = 0.0f;
+    float inv = 1.0f / spatialSize;
     for (int i = 0; i < spatialSize; i++)
         sum += input_0[i];
-    output_0[0] = sum / spatialSize;
+    output_0[0] = sum * inv;
 }

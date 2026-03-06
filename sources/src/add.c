@@ -41,8 +41,9 @@ void add_generic(int size1, int size2, float* input_0, float* input_1, float* ou
 // Hierarchical versions — called once per element by PREESM
 // =============================================================================
 
-void add_same_neuron(float* input_0, float* input_1, float* output_0) {
-    output_0[0] = input_0[0] + input_1[0];
+void add_same_neuron(int size1, int size2, float* input_0, float* input_1, float* output_0) {
+    for (int i = 0; i < size1; i++)
+        output_0[i] = input_0[i] + input_1[i];
 }
 
 void add_bias_neuron(float* input_0, float* input_1, float* output_0) { 

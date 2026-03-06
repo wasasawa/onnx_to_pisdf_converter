@@ -12,20 +12,23 @@ void avgpool2d(
     int padTop,       int padLeft,
     int padBottom,    int padRight,
     int outputHeight, int outputWidth,
-    float* input_0,   float* output_0
+    int countIncludePad,
+    float* input_0, float* output_0
 );
 
 // =============================================================================
 // Hierarchical — one channel per firing
 // =============================================================================
 void avgpool2d_neuron(
+    int depthInput,
     int inputHeight,  int inputWidth,
     int poolHeight,   int poolWidth,
     int strideHeight, int strideWidth,
     int padTop,       int padLeft,
     int padBottom,    int padRight,
     int outputHeight, int outputWidth,
-    float* input_0,   float* output_0
+    int countIncludePad,
+    float* input_0, float* output_0
 );
 
 // =============================================================================

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+void loadWeights(int offset,int size, void *output);
 void load_weights_float (int offset, int size, float*     output);
 void load_weights_int64 (int offset, int size, long long* output);
 void load_weights_int32 (int offset, int size, int*       output);

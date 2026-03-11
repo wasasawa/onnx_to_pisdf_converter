@@ -497,8 +497,8 @@ def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype
     range_fill_counter += 1
     return tensor
 
-def fill_IRGraph(model_data, shapes, offset_map, hierarchial) -> IRGraph:
-    graph = IRGraph(model_data["name"])
+def fill_IRGraph(model_data, shapes, offset_map, hierarchial, graph_name) -> IRGraph:
+    graph = IRGraph(graph_name)
     source_map = OPTYPE_TO_PI if hierarchial else OPTYPE_TO_H
 
     initializer_dtype_map = {
@@ -616,7 +616,7 @@ def fill_IRGraph(model_data, shapes, offset_map, hierarchial) -> IRGraph:
         for param_name, value in raw_params.items():
             ir_param = graph.get_or_create_param(param_name, value)
             actor.add_param(param_name, ir_param)
-        actor.source = source_map.get(actor.op_type, "Code/include/unknown.h")
+        actor.source = source_map.get(actor.op_type, OPTYPE_TO_H.get(actor.op_type))
        
        
     # ===============================================================================================
@@ -968,7 +968,7 @@ def generate_xml(graph: IRGraph, model_data) -> str:
     
     graph_el0 = SubElement(graph_el, "data", attrib={
         "key":"name"
-    })
+    }).text = graph.name
     # -------------------------------------------------------------------------
     # Parameters (config nodes)
     # -------------------------------------------------------------------------

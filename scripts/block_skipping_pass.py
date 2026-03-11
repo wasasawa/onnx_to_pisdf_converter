@@ -481,7 +481,7 @@ def _create_keep_param(graph: IRGraph, block_idx: int) -> IRParam:
 
 def _add_cfg_port(actor: IRActor, keep_param: IRParam) -> None:
     """Idempotently add keep as a cfg_input port on actor."""
-    port_name = keep_param.name
+    port_name = keep_param.name if not actor.op_type == OpType.BROADCAST else keep_param.unique_id
     if any(p.name == port_name for p, _ in actor.params):
         return
     actor.add_param(port_name, keep_param)
@@ -499,7 +499,7 @@ def _modify_broadcast(block: ResidualBlock, keep_param: IRParam) -> None:
     """
     _add_cfg_port(block.broadcast_actor, keep_param)
     block.broadcast_compute_port.rate = _mul(
-        block.broadcast_compute_port.rate, keep_param.name
+        block.broadcast_compute_port.rate, keep_param.unique_id
     )
 
 

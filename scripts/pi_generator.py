@@ -207,7 +207,7 @@ RATE_EXPRESSIONS = {
     "concat": {
         "src_rates":  {"input_0": "size1", "input_1": "size2"},
         "inputs":     {"input_0": "1",     "input_1": "1"},
-        "outputs":    {"output_0": "1"},
+        "outputs":    {"output_0": "2"},
         "snk_rates":  {"output_0": "size1 + size2"},
     },
     # -------------------------------------------------------------------------
@@ -268,10 +268,10 @@ def _get_actor_out_expr(rate_exprs: dict, port_name: str, fallback: int) -> str:
 
 def generate_pi_file(actor: IRActor, output_dir: str) -> str:
     op_name    = _get_op_name(actor) 
+    rate_exprs = RATE_EXPRESSIONS.get(op_name, {})
     if any(p.name == "keep" for p, _ in actor.params):
         op_name = f"dy_{op_name}"
     pi_path    = os.path.join(output_dir, f"{op_name}.pi") # use PI dict?
-    rate_exprs = RATE_EXPRESSIONS.get(op_name, {})
     loop_name  = OPTYPE_TO_LOOP_FN[actor.op_type]
     inner_name = f"{loop_name}_neuron"
     h_source   = OPTYPE_TO_H[actor.op_type]

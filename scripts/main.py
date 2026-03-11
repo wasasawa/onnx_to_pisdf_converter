@@ -8,8 +8,8 @@ def main(model_path, hierarchial = 0, output_xml="", output_weights="../bin/weig
     shapes = infer_tensor_shapes(model_data["model"], model_data["initializers"])
 
     offset_map = create_weights_file_sectioned(model_data["initializers"], output_weights)
-
-    graph = fill_IRGraph(model_data, shapes, offset_map, hierarchial)
+    graph_name = os.path.splitext(os.path.basename(output_xml))[0]
+    graph = fill_IRGraph(model_data, shapes, offset_map, hierarchial, graph_name)
 
     graph.print_summary()
     graph.print_actors()

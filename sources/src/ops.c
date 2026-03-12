@@ -22,7 +22,7 @@ void sigmoid(int size, float* input_0, float* output_0) {
     for (int i = 0; i < size; i++)
         output_0[i] = 1.0f / (1.0f + expf(-input_0[i]));
 }
-void sigmoid_neuron(float* input_0, float* output_0) {
+void sigmoid_neuron(int size, float* input_0, float* output_0) {
     output_0[0] = 1.0f / (1.0f + expf(-input_0[0]));
 }
 
@@ -33,7 +33,7 @@ void tanh_op(int size, float* input_0, float* output_0) {
     for (int i = 0; i < size; i++)
         output_0[i] = tanhf(input_0[i]);
 }
-void tanh_op_neuron(float* input_0, float* output_0) {
+void tanh_op_neuron(int size, float* input_0, float* output_0) {
     output_0[0] = tanhf(input_0[0]);
 }
 
@@ -43,7 +43,7 @@ void tanh_op_neuron(float* input_0, float* output_0) {
 void dropout(int size, float* input_0, float* output_0) {
     memcpy(output_0, input_0, size * sizeof(float));
 }
-void dropout_neuron(float* input_0, float* output_0) {
+void dropout_neuron(int size, float* input_0, float* output_0) {
     output_0[0] = input_0[0];
 }
 
@@ -136,6 +136,6 @@ void matmul_neuron(int M, int K, int N, float* input_0, float* input_1, float* o
 void reshape(int inputSize, int outputSize, float* input_0, int* input_1, float* output_0) {
     memcpy(output_0, input_0, inputSize * sizeof(float));
 }
-void reshape_neuron(float* input_0, int* input_1, float* output_0) {
+void reshape_neuron(int inputSize, int outputSize, float* input_0, int* input_1, float* output_0) {
     output_0[0] = input_0[0];
 }

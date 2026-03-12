@@ -150,7 +150,7 @@ OPTYPE_TO_H = {
     OpType.CONV2D_BIAS: "Code/include/conv2d.h",
     OpType.MAXPOOL2D: "Code/include/maxpool2d.h",
     OpType.AVGPOOL2D: "Code/include/avgpool2d.h",
-    OpType.GLOBAL_AVGPOOL: "Code/include/global_avgpool.h",
+    OpType.GLOBAL_AVGPOOL: "Code/include/avgpool2d.h",
     
     OpType.MATMUL: "Code/include/ops.h",
     OpType.SOFTMAX: "Code/include/ops.h",

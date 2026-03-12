@@ -111,7 +111,7 @@ void global_avgpool(int depth, int spatialSize, float* input_0, float* output_0)
 }
 
 /* Hierarchical — one channel per firing */
-void global_avgpool_neuron(int spatialSize, float* input_0, float* output_0) {
+void global_avgpool_neuron(int depth, int spatialSize, float* input_0, float* output_0) {
     float sum = 0.0f;
     float inv = 1.0f / spatialSize;
     for (int i = 0; i < spatialSize; i++)

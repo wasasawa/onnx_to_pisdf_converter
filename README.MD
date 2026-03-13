@@ -17,59 +17,85 @@ Converts ONNX neural network models to PiSDF (Parameterized and Interfaced Synch
 │   ├── main.py                    # Entry point
 │   ├── parser.py                  # Parses ONNX model, writes weights to binary
 │   ├── converter.py               # Builds the IR graph, generates XML
+│   ├── structure.py               # IR data structure definitions
 │   ├── pi_generator.py            # Generates actor .pi files (hierarchical mode)
-│   └── structure.py               # IR data structure definitions
+│   ├── actor_codegen.py           # Per-op C++ code generator classes (oneDNN)
+│   └── model_codegen.py           # Orchestrates actor code generation for a full model
 │
 └── sources/
-    ├── include/                   # Reference headers — copy into your PREESM Code/include/
-    │   ├── add.h
-    │   ├── avgpool2d.h
-    │   ├── conv2d.h
-    │   ├── load_weights.h         # Weights loader, contains mlultiple versions for when the type is different
-    │   ├── maxpool2d.h
-    │   ├── ops.h
-    │   └── transpose.h
+    ├── include/                   # Hand-written reference headers
+    │   ├── add.h, conv2d.h, ...   # One header per operator
+    │   └── runtime/               # Generated-kernel support headers
+    │       ├── dnnl_utils.h       # oneDNN engine/stream/memory helpers
+    │       └── blas_utils.h       # BLAS helpers (GEMM)
     │
-    ├── src/                       # Reference C implementations — copy into your PREESM Code/src/
-    │   ├── add.c
-    │   ├── avgpool2d.c
-    │   ├── conv2d.c
-    │   ├── load_weights.c         
-    │   ├── maxpool2d.c
-    │   ├── ops.c
-    │   └── transpose.c
+    ├── src/                       # Hand-written C implementations
+    │   ├── add.c, conv2d.c, ...
+    │   └── loadWeights.c
+    │
+    ├── generated/                 # Output of model_codegen.py (created at runtime)
+    │   ├── <model>_actors.h       # Function declarations for all actors in the model
+    │   └── <model>_actors.cpp     # oneDNN-backed implementations
     │
     └── pi/                        # Generated .pi actor files (hierarchical mode)
 ```
 
 ## Usage
 ```bash
-python scripts/main.py <model_path> [hierarchical] [output_path] [weights_path]
+python scripts/main.py <model_path> [hierarchical] [isGeneratedKernels] [output_path] [weights_path]
 ```
 
 | Argument | Description | Default |
 |---|---|---|
 | `model_path` | Path to the ONNX model | required |
-| `hierarchical` | `1` for hierarchical mode, `0` for flat | `0` |
-| `output_path` | Directory for the generated `.pi` graph | `output_graphs/` |
-| `weights_path` | Directory for the generated `weights.bin` | `bin/` |
+| `hierarchical` | `1` for hierarchical `.pi` subgraphs, `0` for flat | `0` |
+| `isGeneratedKernels` | `1` to generate oneDNN actor code, `0` for hand-written | `1` |
+| `output_path` | Path for the generated `.pi` graph | `output_graphs/output.pi` |
+| `weights_path` | Path for the generated `weights.bin` | `bin/weights.bin` |
 
 ### Examples
 ```bash
-# Flat mode — converts mnist-12, outputs to default locations
-python scripts/main.py models/mnist-12.onnx 0
+# Flat graph + generated oneDNN kernels (recommended)
+python main.py ../models/cifar10_resnet32.onnx 0 1 ../output_graphs/resnet32.pi ../bin/weights.bin
 
-# Hierarchical mode — converts squeezenet, outputs to custom locations
-python scripts/main.py models/squeezenet1.1.onnx 1 output/ weights/
-```
+# Flat graph + hand-written kernels (no code generation)
+python main.py ../models/cifar10_resnet32.onnx 0 0 ../output_graphs/resnet32.pi ../bin/weights.bin
+
 
 Both commands will:
 1. Parse the ONNX model
 2. Run shape inference
 3. Build the IR graph
 4. Write `weights.bin`
+5. *(isGeneratedKernels=1)* Generate `sources/generated/<model>_actors.h/.cpp`
+6. Generate the PiSDF graph at `output_path`
+7. *(hierarchical=1)* Generate actor `.pi` subgraphs in `sources/pi/`
+
+## Runtime Kernel Generator
+
+When `isGeneratedKernels=1` (the default), the converter generates model-specific
+C++ actor implementations backed by [oneDNN](https://oneapi-src.github.io/oneDNN/)
+(formerly DNNL) primitives, replacing the generic hand-written C kernels.
+
 5. Generate the PiSDF graph in `output_path/`
 6. *(Hierarchical only)* Generate actor `.pi` files in `sources/pi/`
+
+### Deploying to the PREESM runtime project
+
+After running the converter:
+
+1. Copy `sources/generated/<model>_actors.h` → `Code/include/runtime/`
+2. Copy `sources/generated/<model>_actors.cpp` → `Code/src/runtime/`
+3. Copy `sources/include/runtime/dnnl_utils.h` → `Code/include/runtime/`
+
+
+### System requirements for generated kernels
+
+```bash
+# Ubuntu / Debian
+sudo apt install libdnnl-dev libopenblas-dev
+```
+
 
 ## Requirements
 ```bash

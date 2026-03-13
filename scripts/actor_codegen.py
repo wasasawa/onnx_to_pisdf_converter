@@ -1,0 +1,863 @@
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import Optional
+from structure import IRActor, OpType
+
+
+# ---------------------------------------------------------------------------
+# Base class
+# ---------------------------------------------------------------------------
+
+class ActorCodegen(ABC):
+    """Generates one generic C++ function for an operator type."""
+
+    @abstractmethod
+    def decl(self, actor: IRActor, params: dict) -> str:
+        """Function declaration with semicolon (for the .h file)."""
+
+    @abstractmethod
+    def defn(self, actor: IRActor, params: dict) -> str:
+        """Full function definition (for the .cpp file)."""
+
+    def loop_fn(self, actor: IRActor) -> str:
+        """C function name PREESM calls — same for every actor of this type."""
+        return self._base_name()
+
+    def _base_name(self) -> str:
+        return type(self).__name__.replace("Codegen", "").lower()
+
+    @staticmethod
+    def _full_sig(actor: IRActor) -> str:
+        """
+        Complete C signature:
+          int <param>, ...       cfg_input ports — passed by PREESM as ints
+          <dtype>* <port>, ...   data / weight inputs
+          <dtype>* <port>, ...   outputs
+        """
+        parts = [f"int {port.name}" for port, _ in actor.params]
+        for port, tensor in actor.inputs + actor.weights:
+            parts.append(f"{tensor.dtype}* {port.name}")
+        for port, tensor in actor.outputs:
+            parts.append(f"{tensor.dtype}* {port.name}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _key_names(actor: IRActor) -> str:
+        """Comma-separated param names used as the std::map cache key."""
+        return ", ".join(port.name for port, _ in actor.params)
+
+
+# ===========================================================================
+# Convolution
+# ===========================================================================
+
+class Conv2DCodegen(ActorCodegen):
+    """Conv2D without bias."""
+
+    def _base_name(self): return "conv2d"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{
+        convolution_forward prim;
+        memory              weights_mem;
+        bool                ready = false;
+    }};
+    static std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
+    auto& _e = _cache[{{std::vector<int>{{{kn}}}, (const void*)input_1}}];
+
+    if (!_e.ready) {{
+        auto& eng = rt::cpu_engine();
+        memory::dims src_dims = {{1, depthInput,  inputHeight,       inputWidth}};
+        memory::dims w_dims   = {{depthOutput, depthInput, sizeKernelHeight, sizeKernelWidth}};
+        memory::dims dst_dims = {{1, depthOutput, outputHeight,      outputWidth}};
+        memory::dims strides  = {{strideHeight, strideWidth}};
+        memory::dims dils     = {{dilationHeight - 1, dilationWidth - 1}};
+        memory::dims pad_l    = {{padTop, padLeft}};
+        memory::dims pad_r    = {{padBottom, padRight}};
+
+        auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
+        auto w_any  = memory::desc(w_dims,   memory::data_type::f32, memory::format_tag::any);
+        auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
+
+        auto pd = convolution_forward::primitive_desc(eng,
+            prop_kind::forward_inference,
+            algorithm::convolution_direct,
+            src_md, w_any, dst_md,
+            strides, dils, pad_l, pad_r);
+
+        auto w_plain   = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+        _e.weights_mem = rt::reorder_to_optimal(input_1, w_plain, pd.weights_desc());
+        _e.prim  = convolution_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto& stm = rt::cpu_stream();
+    auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+                               memory::data_type::f32, memory::format_tag::nchw);
+    auto dst_md = memory::desc({{1, depthOutput, outputHeight, outputWidth}},
+                               memory::data_type::f32, memory::format_tag::nchw);
+    _e.prim.execute(stm, {{
+        {{DNNL_ARG_SRC,     rt::wrap(input_0,  src_md)}},
+        {{DNNL_ARG_WEIGHTS, _e.weights_mem}},
+        {{DNNL_ARG_DST,     rt::wrap(output_0, dst_md)}},
+    }});
+    stm.wait();
+}}
+"""
+
+
+class Conv2DBiasCodegen(ActorCodegen):
+    """Conv2D with bias fused."""
+
+    def _base_name(self): return "conv2d_bias"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{
+        convolution_forward prim;
+        memory              weights_mem;
+        bool                ready = false;
+    }};
+    static std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
+    auto& _e = _cache[{{std::vector<int>{{{kn}}}, (const void*)input_1}}];
+
+    if (!_e.ready) {{
+        auto& eng = rt::cpu_engine();
+        memory::dims src_dims  = {{1, depthInput,  inputHeight,       inputWidth}};
+        memory::dims w_dims    = {{depthOutput, depthInput, sizeKernelHeight, sizeKernelWidth}};
+        memory::dims bias_dims = {{depthOutput}};
+        memory::dims dst_dims  = {{1, depthOutput, outputHeight,      outputWidth}};
+        memory::dims strides   = {{strideHeight, strideWidth}};
+        memory::dims dils      = {{dilationHeight - 1, dilationWidth - 1}};
+        memory::dims pad_l     = {{padTop, padLeft}};
+        memory::dims pad_r     = {{padBottom, padRight}};
+
+        auto src_md  = memory::desc(src_dims,  memory::data_type::f32, memory::format_tag::nchw);
+        auto w_any   = memory::desc(w_dims,    memory::data_type::f32, memory::format_tag::any);
+        auto bias_md = memory::desc(bias_dims, memory::data_type::f32, memory::format_tag::a);
+        auto dst_md  = memory::desc(dst_dims,  memory::data_type::f32, memory::format_tag::nchw);
+
+        auto pd = convolution_forward::primitive_desc(eng,
+            prop_kind::forward_inference,
+            algorithm::convolution_direct,
+            src_md, w_any, bias_md, dst_md,
+            strides, dils, pad_l, pad_r);
+
+        auto w_plain   = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+        _e.weights_mem = rt::reorder_to_optimal(input_1, w_plain, pd.weights_desc());
+        _e.prim  = convolution_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto& stm = rt::cpu_stream();
+    auto src_md  = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+                                memory::data_type::f32, memory::format_tag::nchw);
+    auto bias_md = memory::desc({{depthOutput}},
+                                memory::data_type::f32, memory::format_tag::a);
+    auto dst_md  = memory::desc({{1, depthOutput, outputHeight, outputWidth}},
+                                memory::data_type::f32, memory::format_tag::nchw);
+    _e.prim.execute(stm, {{
+        {{DNNL_ARG_SRC,     rt::wrap(input_0,  src_md)}},
+        {{DNNL_ARG_WEIGHTS, _e.weights_mem}},
+        {{DNNL_ARG_BIAS,    rt::wrap(input_2,  bias_md)}},
+        {{DNNL_ARG_DST,     rt::wrap(output_0, dst_md)}},
+    }});
+    stm.wait();
+}}
+"""
+
+
+# ===========================================================================
+# Pooling
+# ===========================================================================
+
+class MaxPool2DCodegen(ActorCodegen):
+
+    def _base_name(self): return "maxpool2d"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{ pooling_forward prim; bool ready = false; }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{kn}}}];
+
+    if (!_e.ready) {{
+        auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+                                   memory::data_type::f32, memory::format_tag::nchw);
+        auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+                                   memory::data_type::f32, memory::format_tag::nchw);
+        auto pd = pooling_forward::primitive_desc(rt::cpu_engine(),
+            prop_kind::forward_inference, algorithm::pooling_max,
+            src_md, dst_md,
+            {{strideHeight, strideWidth}}, {{poolHeight, poolWidth}},
+            {{0, 0}},
+            {{padTop, padLeft}}, {{padBottom, padRight}});
+        _e.prim  = pooling_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto& stm = rt::cpu_stream();
+    auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+                               memory::data_type::f32, memory::format_tag::nchw);
+    auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+                               memory::data_type::f32, memory::format_tag::nchw);
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, src_md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, dst_md)}}}});
+    stm.wait();
+}}
+"""
+
+
+class AvgPool2DCodegen(ActorCodegen):
+
+    def _base_name(self): return "avgpool2d"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{ pooling_forward prim; bool ready = false; }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{kn}}}];
+
+    if (!_e.ready) {{
+        auto alg = (countIncludePad != 0)
+            ? algorithm::pooling_avg_include_padding
+            : algorithm::pooling_avg_exclude_padding;
+        auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+                                   memory::data_type::f32, memory::format_tag::nchw);
+        auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+                                   memory::data_type::f32, memory::format_tag::nchw);
+        auto pd = pooling_forward::primitive_desc(rt::cpu_engine(),
+            prop_kind::forward_inference, alg,
+            src_md, dst_md,
+            {{strideHeight, strideWidth}}, {{poolHeight, poolWidth}},
+            {{0, 0}},
+            {{padTop, padLeft}}, {{padBottom, padRight}});
+        _e.prim  = pooling_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto& stm = rt::cpu_stream();
+    auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+                               memory::data_type::f32, memory::format_tag::nchw);
+    auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+                               memory::data_type::f32, memory::format_tag::nchw);
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, src_md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, dst_md)}}}});
+    stm.wait();
+}}
+"""
+
+
+class GlobalAvgPoolCodegen(ActorCodegen):
+    """Global average pool: mean over spatialSize for each of depth channels."""
+
+    def _base_name(self): return "global_avgpool"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    for (int c = 0; c < depth; ++c) {{
+        float sum = 0.0f;
+        const float* ch = input_0 + c * spatialSize;
+        for (int i = 0; i < spatialSize; ++i) sum += ch[i];
+        output_0[c] = sum / static_cast<float>(spatialSize);
+    }}
+}}
+"""
+
+
+# ===========================================================================
+# Element-wise activation (Relu, Sigmoid, Tanh, Dropout)
+# ===========================================================================
+
+class ReluCodegen(ActorCodegen):
+
+    def _base_name(self): return "relu"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{ eltwise_forward prim; bool ready = false; }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{kn}}}];
+
+    if (!_e.ready) {{
+        auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd = eltwise_forward::primitive_desc(rt::cpu_engine(),
+            prop_kind::forward_inference,
+            algorithm::eltwise_relu, md, md, 0.f, 0.f);
+        _e.prim  = eltwise_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+    auto& stm = rt::cpu_stream();
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    stm.wait();
+}}
+"""
+
+
+class SigmoidCodegen(ActorCodegen):
+
+    def _base_name(self): return "sigmoid"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{ eltwise_forward prim; bool ready = false; }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{kn}}}];
+
+    if (!_e.ready) {{
+        auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd = eltwise_forward::primitive_desc(rt::cpu_engine(),
+            prop_kind::forward_inference,
+            algorithm::eltwise_logistic, md, md, 0.f, 0.f);
+        _e.prim  = eltwise_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+    auto& stm = rt::cpu_stream();
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    stm.wait();
+}}
+"""
+
+
+class TanhCodegen(ActorCodegen):
+    # NOTE: named "tanh_op" to avoid collision with <cmath>'s ::tanh
+
+    def _base_name(self): return "tanh_op"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{ eltwise_forward prim; bool ready = false; }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{kn}}}];
+
+    if (!_e.ready) {{
+        auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd = eltwise_forward::primitive_desc(rt::cpu_engine(),
+            prop_kind::forward_inference,
+            algorithm::eltwise_tanh, md, md, 0.f, 0.f);
+        _e.prim  = eltwise_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+    auto& stm = rt::cpu_stream();
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    stm.wait();
+}}
+"""
+
+
+class DropoutCodegen(ActorCodegen):
+    """Dropout is a passthrough at inference time."""
+
+    def _base_name(self): return "dropout"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    // Dropout is identity at inference time.
+    std::memcpy(output_0, input_0, size * sizeof(float));
+}}
+"""
+
+
+# ===========================================================================
+# Add variants
+# ===========================================================================
+
+class AddSameCodegen(ActorCodegen):
+    """Element-wise add of two tensors of equal size."""
+
+    def _base_name(self): return "add_same"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{ dnnl::binary prim; bool ready = false; }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{kn}}}];
+
+    if (!_e.ready) {{
+        auto md = memory::desc({{size1}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd = dnnl::binary::primitive_desc(rt::cpu_engine(),
+            algorithm::binary_add, md, md, md);
+        _e.prim  = dnnl::binary(pd);
+        _e.ready = true;
+    }}
+
+    auto md = memory::desc({{size1}}, memory::data_type::f32, memory::format_tag::a);
+    auto& stm = rt::cpu_stream();
+    _e.prim.execute(stm, {{
+        {{DNNL_ARG_SRC_0, rt::wrap(input_0, md)}},
+        {{DNNL_ARG_SRC_1, rt::wrap(input_1, md)}},
+        {{DNNL_ARG_DST,   rt::wrap(output_0, md)}},
+    }});
+    stm.wait();
+}}
+"""
+
+
+class AddBiasCodegen(ActorCodegen):
+    """Add where input_1 (bias) is smaller and broadcast cyclically."""
+
+    def _base_name(self): return "add_bias"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    // output[i] = input_0[i] + input_1[i % size2]  (cyclic broadcast)
+    for (int i = 0; i < size1; ++i)
+        output_0[i] = input_0[i] + input_1[i % size2];
+}}
+"""
+
+
+class AddScalarCodegen(ActorCodegen):
+    """Add where input_1 is a single scalar broadcast to all elements."""
+
+    def _base_name(self): return "add_scalar"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    const float s = input_1[0];
+    for (int i = 0; i < size1; ++i)
+        output_0[i] = input_0[i] + s;
+}}
+"""
+
+
+class AddGenericCodegen(ActorCodegen):
+    """Runtime-dispatch add: same-size, scalar, or cyclic broadcast."""
+
+    def _base_name(self): return "add_generic"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    if (size1 == size2) {{
+        for (int i = 0; i < size1; ++i) output_0[i] = input_0[i] + input_1[i];
+    }} else if (size2 == 1) {{
+        const float s = input_1[0];
+        for (int i = 0; i < size1; ++i) output_0[i] = input_0[i] + s;
+    }} else {{
+        for (int i = 0; i < size1; ++i) output_0[i] = input_0[i] + input_1[i % size2];
+    }}
+}}
+"""
+
+
+# ===========================================================================
+# Linear / matrix ops
+# ===========================================================================
+
+class MatMulCodegen(ActorCodegen):
+    """Matrix multiplication A[M,K] x B[K,N] → C[M,N] via CBLAS."""
+
+    def _base_name(self): return "matmul"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    // C[M x N] = A[M x K] * B[K x N]
+    rt::sgemm(false, false, M, N, K,
+              1.0f, input_0, K,
+                    input_1, N,
+              0.0f, output_0, N);
+}}
+"""
+
+
+class GemmCodegen(ActorCodegen):
+    """ONNX Gemm: Y = alpha * op(A) * op(B) + beta * C via CBLAS."""
+
+    def _base_name(self): return "gemm"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    // Y = alpha * op(A)[M x K] * op(B)[K x N] + beta * C[sizeC]
+    // alpha and beta are passed as int (always 1 in standard ONNX models).
+    std::memcpy(output_0, input_2, sizeC * sizeof(float));
+    rt::sgemm(
+        transA != 0, transB != 0,
+        M, N, K,
+        static_cast<float>(alpha),
+        input_0, transA ? M : K,
+        input_1, transB ? K : N,
+        static_cast<float>(beta),
+        output_0, N);
+}}
+"""
+
+
+class SoftmaxCodegen(ActorCodegen):
+
+    def _base_name(self): return "softmax"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        kn  = self._key_names(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    struct _Entry {{ softmax_forward prim; bool ready = false; }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{kn}}}];
+
+    if (!_e.ready) {{
+        auto md = memory::desc({{outerSize, size / outerSize}},
+                               memory::data_type::f32, memory::format_tag::ab);
+        auto pd = softmax_forward::primitive_desc(rt::cpu_engine(),
+            prop_kind::forward_inference, algorithm::softmax_accurate,
+            md, md, /*axis=*/1);
+        _e.prim  = softmax_forward(pd);
+        _e.ready = true;
+    }}
+
+    auto md = memory::desc({{outerSize, size / outerSize}},
+                           memory::data_type::f32, memory::format_tag::ab);
+    auto& stm = rt::cpu_stream();
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    stm.wait();
+}}
+"""
+
+
+# ===========================================================================
+# Shape / memory ops
+# ===========================================================================
+
+class ReshapeCodegen(ActorCodegen):
+    """Reshape is a shape-only operation — data is memcopied unchanged."""
+
+    def _base_name(self): return "reshape"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    // input_1 carries the target shape tensor (int64_t) — ignored at inference.
+    std::memcpy(output_0, input_0, outputSize * sizeof(float));
+}}
+"""
+
+
+class FlattenCodegen(ActorCodegen):
+    """Flatten is a contiguous reshape — pure memcpy."""
+
+    def _base_name(self): return "flatten"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        return f"""\
+void {fn}({sig})
+{{
+    std::memcpy(output_0, input_0, outputSize * sizeof(float));
+}}
+"""
+
+
+class ConcatCodegen(ActorCodegen):
+    """
+    Concatenation along the channel / last axis.
+    Generates one std::memcpy per input, so the body adapts to the
+    actual number of inputs of the representative actor.
+    """
+
+    def _base_name(self): return "concat"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+
+        all_inputs = actor.inputs + actor.weights
+        copies = []
+        offset = "0"
+        for i, (port, _) in enumerate(all_inputs):
+            size_var = f"size{i + 1}"
+            dst = f"output_0 + {offset}" if offset != "0" else "output_0"
+            copies.append(f"    std::memcpy({dst}, {port.name}, {size_var} * sizeof(float));")
+            offset = f"{offset} + {size_var}" if offset != "0" else size_var
+
+        body = "\n".join(copies)
+        return f"""\
+void {fn}({sig})
+{{
+{body}
+}}
+"""
+
+
+# ===========================================================================
+# Normalisation
+# ===========================================================================
+
+class BatchNormCodegen(ActorCodegen):
+    """Batch normalisation, inference mode (uses precomputed mean/variance)."""
+
+    def _base_name(self): return "batchnorm_spatial"
+
+    def decl(self, actor, params):
+        return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
+
+    def defn(self, actor, params):
+        fn  = self.loop_fn(actor)
+        sig = self._full_sig(actor)
+        # epsilon is stored as a mangled string in IRParam (float→int precision
+        # loss), so we read it directly from the ONNX attribute and bake it in.
+        # The 'epsilon' cfg_input port is kept in the signature to satisfy
+        # PREESM's port matching; its runtime value is ignored.
+        shape_params = ", ".join(
+            port.name for port, _ in actor.params if port.name != "epsilon"
+        )
+
+        return f"""\
+void {fn}({sig})
+{{
+    using namespace dnnl;
+    // 'epsilon' is accepted as int to match the cfg_input port but its value
+    // is unusable (float→int truncation). A fixed standard value is used.
+    static constexpr float kEps = 1e-5f;
+    struct _Entry {{
+        batch_normalization_forward prim;
+        memory                      scale_shift_mem;
+        bool                        ready = false;
+    }};
+    static std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[{{{shape_params}}}];
+
+    if (!_e.ready) {{
+        auto& eng = rt::cpu_engine();
+        auto md = memory::desc({{1, channels, spatialSize}},
+                               memory::data_type::f32, memory::format_tag::abc);
+        auto pd = batch_normalization_forward::primitive_desc(eng,
+            prop_kind::forward_inference, md, md, kEps,
+            normalization_flags::use_scale |
+            normalization_flags::use_shift |
+            normalization_flags::use_global_stats);
+        _e.prim            = batch_normalization_forward(pd);
+        _e.scale_shift_mem = memory(pd.weights_desc(), eng);
+        _e.ready = true;
+    }}
+
+    // oneDNN v2: scale and shift interleaved [gamma_0..gamma_C, beta_0..beta_C]
+    float* ss = static_cast<float*>(_e.scale_shift_mem.get_data_handle());
+    std::memcpy(ss,             input_1, channels * sizeof(float));
+    std::memcpy(ss + channels,  input_2, channels * sizeof(float));
+
+    auto& stm = rt::cpu_stream();
+    auto md  = memory::desc({{1, channels, spatialSize}},
+                            memory::data_type::f32, memory::format_tag::abc);
+    auto md1 = memory::desc({{channels}},
+                            memory::data_type::f32, memory::format_tag::a);
+    _e.prim.execute(stm, {{
+        {{DNNL_ARG_SRC,         rt::wrap(input_0, md)}},
+        {{DNNL_ARG_MEAN,        rt::wrap(input_3, md1)}},
+        {{DNNL_ARG_VARIANCE,    rt::wrap(input_4, md1)}},
+        {{DNNL_ARG_SCALE_SHIFT, _e.scale_shift_mem}},
+        {{DNNL_ARG_DST,         rt::wrap(output_0, md)}},
+    }});
+    stm.wait();
+}}
+"""
+
+
+# ===========================================================================
+# Operator Registry
+# ===========================================================================
+
+CODEGEN_REGISTRY: dict[OpType, ActorCodegen] = {
+    # Convolution
+    OpType.CONV2D:        Conv2DCodegen(),
+    OpType.CONV2D_BIAS:   Conv2DBiasCodegen(),
+    # Pooling
+    OpType.MAXPOOL2D:     MaxPool2DCodegen(),
+    OpType.AVGPOOL2D:     AvgPool2DCodegen(),
+    OpType.GLOBAL_AVGPOOL: GlobalAvgPoolCodegen(),
+    # Activations
+    OpType.RELU:          ReluCodegen(),
+    OpType.SIGMOID:       SigmoidCodegen(),
+    OpType.TANH:          TanhCodegen(),
+    OpType.DROPOUT:       DropoutCodegen(),
+    # Add variants
+    OpType.ADD_SAME:      AddSameCodegen(),
+    OpType.ADD_BIAS:      AddBiasCodegen(),
+    OpType.ADD_SCALAR:    AddScalarCodegen(),
+    OpType.ADD_GENERIC:   AddGenericCodegen(),
+    # Linear
+    OpType.MATMUL:        MatMulCodegen(),
+    OpType.GEMM:          GemmCodegen(),
+    OpType.SOFTMAX:       SoftmaxCodegen(),
+    # Shape / memory
+    OpType.RESHAPE:       ReshapeCodegen(),
+    OpType.FLATTEN:       FlattenCodegen(),
+    OpType.CONCAT:        ConcatCodegen(),
+    # Normalisation
+    OpType.BATCHNORM:     BatchNormCodegen(),
+    # TRANSPOSE, SLICE, PAD have variable param counts (rank/ndim-dependent)
+    # and cannot be expressed as a single generic signature — they fall back
+    # to the handwritten kernels via OPTYPE_TO_LOOP_FN.
+}
+
+
+def get_codegen(op_type: OpType) -> Optional[ActorCodegen]:
+    return CODEGEN_REGISTRY.get(op_type)

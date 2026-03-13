@@ -281,7 +281,7 @@ def extract_parameters_from_actor(actor: IRActor, initializer_names: set) -> dic
     # =========================================================================
     elif op == OpType.MATMUL:
         a = input_tensor(0)
-        b = weight_tensor(0)
+        b = weight_tensor(0) or input_tensor(1)
         if a:
             params["M"] = a.shape[-2] if len(a.shape) >= 2 else 1
             params["K"] = a.shape[-1]
@@ -856,7 +856,7 @@ def add_broadcast_actors(graph: IRGraph):
         # --------------------------------------------
         del graph._tensors[tensor.name]
 
-def _generate_actor_node(graph_el, actor: IRActor):
+def _generate_actor_node(graph_el, actor: IRActor, loop_fn_override):
 
     if actor.op_type == OpType.SPLIT_WEIGHTS:
         kind = "fork"
@@ -878,7 +878,11 @@ def _generate_actor_node(graph_el, actor: IRActor):
     # (fork / broadcast) which PREESM handles internally without a loop fn.
     if not actor.source.endswith(".pi"):
         loop_fn = OPTYPE_TO_LOOP_FN.get(actor.op_type, "")
-    
+        if loop_fn_override and actor.unique_name in loop_fn_override:
+          loop_fn = loop_fn_override[actor.unique_name]
+        else:
+            loop_fn = OPTYPE_TO_LOOP_FN.get(actor.op_type, "")
+
         # --- <loop> ---
         loop_el = SubElement(actor_el, "loop", attrib={"name": loop_fn})
     
@@ -949,7 +953,7 @@ def _generate_actor_node(graph_el, actor: IRActor):
             "annotation": "NONE",
         })
 
-def generate_xml(graph: IRGraph, model_data) -> str:
+def generate_xml(graph: IRGraph, model_data, loop_fn_override) -> str:
 
 
     # -------------------------------------------------------------------------
@@ -988,7 +992,7 @@ def generate_xml(graph: IRGraph, model_data) -> str:
     # Actors (computation nodes)
     # -------------------------------------------------------------------------
     for actor in graph.actors:
-        _generate_actor_node(graph_el, actor)
+        _generate_actor_node(graph_el, actor, loop_fn_override)
     # -------------------------------------------------------------------------
     # FIFO edges (data flow)
     # -------------------------------------------------------------------------
@@ -1023,8 +1027,8 @@ def generate_xml(graph: IRGraph, model_data) -> str:
     return parseString(raw).toprettyxml(indent="  ")
 
 
-def write_xml(graph: IRGraph, model_data, output_path: str = "../output_graphs/output.pi"):
-    xml_str = generate_xml(graph, model_data)
+def write_xml(graph: IRGraph, model_data, loop_fn_override, output_path: str = "../output_graphs/output.pi"):
+    xml_str = generate_xml(graph, model_data, loop_fn_override)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(xml_str)
     print(f"XML written to {output_path}")

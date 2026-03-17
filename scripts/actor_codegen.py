@@ -16,7 +16,7 @@ class ActorCodegen(ABC):
         """Function declaration with semicolon (for the .h file)."""
 
     @abstractmethod
-    def defn(self, actor: IRActor, params: dict) -> str:
+    def defn(self, actor: IRActor, params: dict, parallel: bool = False) -> str:
         """Full function definition (for the .cpp file)."""
 
     def loop_fn(self, actor: IRActor) -> str:
@@ -46,6 +46,18 @@ class ActorCodegen(ABC):
         """Comma-separated param names used as the std::map cache key."""
         return ", ".join(port.name for port, _ in actor.params)
 
+    @staticmethod
+    def _cache_qualifier(parallel: bool) -> str:
+        """Storage qualifier for the static cache map."""
+        return "thread_local static" if parallel else "static"
+
+    @staticmethod
+    def _omp_preamble(parallel: bool) -> str:
+        """omp_set_num_threads(1) preamble for oneDNN ops in parallel mode."""
+        if parallel:
+            return "    omp_set_num_threads(1);\n\n"
+        return ""
+
 
 # ===========================================================================
 # Convolution
@@ -59,28 +71,34 @@ class Conv2DCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+        cq  = self._cache_qualifier(parallel)
+        omp = self._omp_preamble(parallel)
+        # In parallel mode, each firing processes 1 output channel
+        w_oc  = "1" if parallel else "depthOutput"
+        d_oc  = "1" if parallel else "depthOutput"
 
         return f"""\
 void {fn}({sig})
 {{
+{omp}\
     using namespace dnnl;
     struct _Entry {{
         convolution_forward prim;
         memory              weights_mem;
         bool                ready = false;
     }};
-    static std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
+    {cq} std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
     auto& _e = _cache[{{std::vector<int>{{{kn}}}, (const void*)input_1}}];
 
     if (!_e.ready) {{
         auto& eng = rt::cpu_engine();
         memory::dims src_dims = {{1, depthInput,  inputHeight,       inputWidth}};
-        memory::dims w_dims   = {{depthOutput, depthInput, sizeKernelHeight, sizeKernelWidth}};
-        memory::dims dst_dims = {{1, depthOutput, outputHeight,      outputWidth}};
+        memory::dims w_dims   = {{{w_oc}, depthInput, sizeKernelHeight, sizeKernelWidth}};
+        memory::dims dst_dims = {{1, {d_oc}, outputHeight,      outputWidth}};
         memory::dims strides  = {{strideHeight, strideWidth}};
         memory::dims dils     = {{dilationHeight - 1, dilationWidth - 1}};
         memory::dims pad_l    = {{padTop, padLeft}};
@@ -105,7 +123,7 @@ void {fn}({sig})
     auto& stm = rt::cpu_stream();
     auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
                                memory::data_type::f32, memory::format_tag::nchw);
-    auto dst_md = memory::desc({{1, depthOutput, outputHeight, outputWidth}},
+    auto dst_md = memory::desc({{1, {d_oc}, outputHeight, outputWidth}},
                                memory::data_type::f32, memory::format_tag::nchw);
     _e.prim.execute(stm, {{
         {{DNNL_ARG_SRC,     rt::wrap(input_0,  src_md)}},
@@ -125,29 +143,36 @@ class Conv2DBiasCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+        cq  = self._cache_qualifier(parallel)
+        omp = self._omp_preamble(parallel)
+        # In parallel mode, each firing processes 1 output channel
+        w_oc = "1" if parallel else "depthOutput"
+        d_oc = "1" if parallel else "depthOutput"
+        b_oc = "1" if parallel else "depthOutput"
 
         return f"""\
 void {fn}({sig})
 {{
+{omp}\
     using namespace dnnl;
     struct _Entry {{
         convolution_forward prim;
         memory              weights_mem;
         bool                ready = false;
     }};
-    static std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
+    {cq} std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
     auto& _e = _cache[{{std::vector<int>{{{kn}}}, (const void*)input_1}}];
 
     if (!_e.ready) {{
         auto& eng = rt::cpu_engine();
         memory::dims src_dims  = {{1, depthInput,  inputHeight,       inputWidth}};
-        memory::dims w_dims    = {{depthOutput, depthInput, sizeKernelHeight, sizeKernelWidth}};
-        memory::dims bias_dims = {{depthOutput}};
-        memory::dims dst_dims  = {{1, depthOutput, outputHeight,      outputWidth}};
+        memory::dims w_dims    = {{{w_oc}, depthInput, sizeKernelHeight, sizeKernelWidth}};
+        memory::dims bias_dims = {{{b_oc}}};
+        memory::dims dst_dims  = {{1, {d_oc}, outputHeight,      outputWidth}};
         memory::dims strides   = {{strideHeight, strideWidth}};
         memory::dims dils      = {{dilationHeight - 1, dilationWidth - 1}};
         memory::dims pad_l     = {{padTop, padLeft}};
@@ -173,9 +198,9 @@ void {fn}({sig})
     auto& stm = rt::cpu_stream();
     auto src_md  = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
                                 memory::data_type::f32, memory::format_tag::nchw);
-    auto bias_md = memory::desc({{depthOutput}},
+    auto bias_md = memory::desc({{{b_oc}}},
                                 memory::data_type::f32, memory::format_tag::a);
-    auto dst_md  = memory::desc({{1, depthOutput, outputHeight, outputWidth}},
+    auto dst_md  = memory::desc({{1, {d_oc}, outputHeight, outputWidth}},
                                 memory::data_type::f32, memory::format_tag::nchw);
     _e.prim.execute(stm, {{
         {{DNNL_ARG_SRC,     rt::wrap(input_0,  src_md)}},
@@ -199,23 +224,28 @@ class MaxPool2DCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+        cq  = self._cache_qualifier(parallel)
+        omp = self._omp_preamble(parallel)
+        # In parallel mode, each firing processes 1 channel
+        ch = "1" if parallel else "depthInput"
 
         return f"""\
 void {fn}({sig})
 {{
+{omp}\
     using namespace dnnl;
     struct _Entry {{ pooling_forward prim; bool ready = false; }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    {cq} std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
-        auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+        auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
                                    memory::data_type::f32, memory::format_tag::nchw);
-        auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+        auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
                                    memory::data_type::f32, memory::format_tag::nchw);
         auto pd = pooling_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference, algorithm::pooling_max,
@@ -228,9 +258,9 @@ void {fn}({sig})
     }}
 
     auto& stm = rt::cpu_stream();
-    auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+    auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
                                memory::data_type::f32, memory::format_tag::nchw);
-    auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+    auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
                                memory::data_type::f32, memory::format_tag::nchw);
     _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, src_md)}},
                            {{DNNL_ARG_DST, rt::wrap(output_0, dst_md)}}}});
@@ -246,26 +276,31 @@ class AvgPool2DCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+        cq  = self._cache_qualifier(parallel)
+        omp = self._omp_preamble(parallel)
+        # In parallel mode, each firing processes 1 channel
+        ch = "1" if parallel else "depthInput"
 
         return f"""\
 void {fn}({sig})
 {{
+{omp}\
     using namespace dnnl;
     struct _Entry {{ pooling_forward prim; bool ready = false; }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    {cq} std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
         auto alg = (countIncludePad != 0)
             ? algorithm::pooling_avg_include_padding
             : algorithm::pooling_avg_exclude_padding;
-        auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+        auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
                                    memory::data_type::f32, memory::format_tag::nchw);
-        auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+        auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
                                    memory::data_type::f32, memory::format_tag::nchw);
         auto pd = pooling_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference, alg,
@@ -278,9 +313,9 @@ void {fn}({sig})
     }}
 
     auto& stm = rt::cpu_stream();
-    auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
+    auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
                                memory::data_type::f32, memory::format_tag::nchw);
-    auto dst_md = memory::desc({{1, depthInput,  outputHeight, outputWidth}},
+    auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
                                memory::data_type::f32, memory::format_tag::nchw);
     _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, src_md)}},
                            {{DNNL_ARG_DST, rt::wrap(output_0, dst_md)}}}});
@@ -297,9 +332,20 @@ class GlobalAvgPoolCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            # Each firing processes 1 channel: spatialSize → 1 output
+            return f"""\
+void {fn}({sig})
+{{
+    float sum = 0.0f;
+    for (int i = 0; i < spatialSize; ++i) sum += input_0[i];
+    output_0[0] = sum / static_cast<float>(spatialSize);
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -325,10 +371,19 @@ class ReluCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+
+        if parallel:
+            # Each firing processes 1 element — scalar is faster than oneDNN
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0] > 0.f ? input_0[0] : 0.f;
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -363,10 +418,18 @@ class SigmoidCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+
+        if parallel:
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = 1.0f / (1.0f + std::exp(-input_0[0]));
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -402,10 +465,19 @@ class TanhCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+
+        if parallel:
+            # Each firing processes 1 element — scalar is faster than oneDNN
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = std::tanh(input_0[0]);
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -441,9 +513,18 @@ class DropoutCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            # Each firing processes 1 element
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0];
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -466,10 +547,18 @@ class AddSameCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+
+        if parallel:
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0] + input_1[0];
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -507,9 +596,17 @@ class AddBiasCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0] + input_1[0];
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -529,9 +626,17 @@ class AddScalarCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0] + input_1[0];
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -551,9 +656,18 @@ class AddGenericCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            # Each firing processes 1 element from each input
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0] + input_1[0];
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -582,9 +696,23 @@ class MatMulCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            # Each firing: 1 row of A (K) × full B (K×N) → 1 row of C (N)
+            return f"""\
+void {fn}({sig})
+{{
+    omp_set_num_threads(1);
+    // C[1 x N] = A[1 x K] * B[K x N]
+    rt::sgemm(false, false, 1, N, K,
+              1.0f, input_0, K,
+                    input_1, N,
+              0.0f, output_0, N);
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -606,9 +734,33 @@ class GemmCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            # M firings — each firing computes one output row (1 x N).
+            # input_0: K elements (one row of A)
+            # input_1: K * N elements (full B, broadcast by PREESM)
+            # input_2: sizeC elements (bias, broadcast by PREESM)
+            # output_0: N elements
+            return f"""\
+void {fn}({sig})
+{{
+    omp_set_num_threads(1);
+    // Parallel: one row per firing (M=1).
+    // Y[1 x N] = alpha * A[1 x K] * B[K x N] + beta * C
+    std::memcpy(output_0, input_2, sizeC * sizeof(float));
+    rt::sgemm(
+        transA != 0, transB != 0,
+        1, N, K,
+        static_cast<float>(alpha),
+        input_0, transA ? 1 : K,
+        input_1, transB ? K : N,
+        static_cast<float>(beta),
+        output_0, N);
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -635,17 +787,22 @@ class SoftmaxCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
         kn  = self._key_names(actor)
+        # Softmax needs the full vector — fires once in hierarchical mode.
+        # Just add thread safety.
+        cq  = self._cache_qualifier(parallel)
+        omp = self._omp_preamble(parallel)
 
         return f"""\
 void {fn}({sig})
 {{
+{omp}\
     using namespace dnnl;
     struct _Entry {{ softmax_forward prim; bool ready = false; }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    {cq} std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
@@ -680,9 +837,18 @@ class ReshapeCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            # Each firing processes 1 element
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0];
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -701,9 +867,17 @@ class FlattenCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            return f"""\
+void {fn}({sig})
+{{
+    output_0[0] = input_0[0];
+}}
+"""
 
         return f"""\
 void {fn}({sig})
@@ -725,9 +899,23 @@ class ConcatCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+
+        if parallel:
+            # Each firing: 1 element from each input → output
+            all_inputs = actor.inputs + actor.weights
+            copies = []
+            for i, (port, _) in enumerate(all_inputs):
+                copies.append(f"    output_0[{i}] = {port.name}[0];")
+            body = "\n".join(copies)
+            return f"""\
+void {fn}({sig})
+{{
+{body}
+}}
+"""
 
         all_inputs = actor.inputs + actor.weights
         copies = []
@@ -759,9 +947,13 @@ class BatchNormCodegen(ActorCodegen):
     def decl(self, actor, params):
         return f"void {self.loop_fn(actor)}({self._full_sig(actor)});"
 
-    def defn(self, actor, params):
+    def defn(self, actor, params, parallel=False):
         fn  = self.loop_fn(actor)
         sig = self._full_sig(actor)
+        # BatchNorm fires once in hierarchical mode (no rate expression).
+        # Just add thread safety.
+        cq  = self._cache_qualifier(parallel)
+        omp = self._omp_preamble(parallel)
         # epsilon is stored as a mangled string in IRParam (float→int precision
         # loss), so we read it directly from the ONNX attribute and bake it in.
         # The 'epsilon' cfg_input port is kept in the signature to satisfy
@@ -773,6 +965,7 @@ class BatchNormCodegen(ActorCodegen):
         return f"""\
 void {fn}({sig})
 {{
+{omp}\
     using namespace dnnl;
     // 'epsilon' is accepted as int to match the cfg_input port but its value
     // is unusable (float→int truncation). A fixed standard value is used.
@@ -782,7 +975,7 @@ void {fn}({sig})
         memory                      scale_shift_mem;
         bool                        ready = false;
     }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    {cq} std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{shape_params}}}];
 
     if (!_e.ready) {{

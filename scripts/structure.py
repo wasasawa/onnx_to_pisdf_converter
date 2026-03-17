@@ -114,8 +114,8 @@ OPTYPE_TO_PI = {
     OpType.RESHAPE: "Algo/reshape.pi",
     
 
-    OpType.FLATTEN: "Algo/flatten.pi",
-    OpType.CONCAT: "Algo/concat.pi",
+    # OpType.FLATTEN: "Algo/flatten.pi",
+    # OpType.CONCAT: "Algo/concat.pi",
     OpType.TRANSPOSE: "Algo/transpose.pi", 
 
     OpType.SLICE: "Algo/slice.pi",
@@ -123,16 +123,16 @@ OPTYPE_TO_PI = {
     OpType.BATCHNORM: "Algo/batchnorm.pi",
     OpType.GEMM: "Algo/gemm.pi",
 
-    OpType.LOAD_INPUT: "",
-    OpType.LOAD_WEIGHTS: "",
-    OpType.SPLIT_WEIGHTS: "",
-    OpType.BROADCAST: "",
-    OpType.FORK: "",
-    OpType.JOIN: "",
-    OpType.OUTPUT: "",
-    OpType.CONSTANT_FILL: "",
-    OpType.RANGE_FILL: "",
-    OpType.POLICYNET: "",
+    # OpType.LOAD_INPUT: "",
+    # OpType.LOAD_WEIGHTS: "",
+    # OpType.SPLIT_WEIGHTS: "",
+    # OpType.BROADCAST: "",
+    # OpType.FORK: "",
+    # OpType.JOIN: "",
+    # OpType.OUTPUT: "",
+    # OpType.CONSTANT_FILL: "",
+    # OpType.RANGE_FILL: "",
+    # OpType.POLICYNET: "",
 }
 
 OPTYPE_TO_H = {

@@ -1,7 +1,8 @@
 from __future__ import annotations
 import os
-from structure import IRGraph, IRActor, OpType, OPTYPE_TO_LOOP_FN
+from structure import IRGraph, IRActor, OpType, OPTYPE_TO_LOOP_FN, OPTYPE_TO_PI
 from actor_codegen import get_codegen
+from pi_generator import SKIP_OPS
 
 
 # Path to sources/generated/ — relative to the scripts/ working directory.
@@ -11,6 +12,7 @@ RUNTIME_INCLUDES = """\
 #include <map>
 #include <vector>
 #include <cstring>
+#include <cmath>
 #include "runtime/dnnl_utils.h"
 #include "runtime/blas_utils.h"
 """
@@ -31,7 +33,7 @@ def _extract_int_params(actor: IRActor) -> dict:
     return params
 
 
-def generate_model_actors(graph: IRGraph, model_name: str) -> dict[str, str]:
+def generate_model_actors(graph: IRGraph, isHierarchial, model_name: str) -> dict[str, str]:
     """
     Generate one C++ function per unique operator type in the graph.
 
@@ -61,16 +63,21 @@ def generate_model_actors(graph: IRGraph, model_name: str) -> dict[str, str]:
         fn_name = codegen.loop_fn(actor)  # e.g. "conv2d_bias"
         loop_fn_map[actor.unique_name] = fn_name
 
+        # An op is parallelized when hierarchical AND it gets a .pi subgraph
+        is_parallel = (isHierarchial
+                        and actor.op_type in OPTYPE_TO_PI
+                        and actor.op_type not in SKIP_OPS)
         # Point the actor's graph_desc at the generated header so PREESM
         # finds the function declaration during code generation.
-        actor.source = f"/Code/include/runtime/{model_name}_actors.h"
+        if not is_parallel :
+            actor.source = f"/Code/include/runtime/{model_name}_actors.h" 
 
         # Generate the function body only once per operator type.
         if actor.op_type not in seen_op_types:
             seen_op_types.add(actor.op_type)
             params = _extract_int_params(actor)
             declarations.append(codegen.decl(actor, params))
-            definitions.append(codegen.defn(actor, params))
+            definitions.append(codegen.defn(actor, params, parallel=is_parallel))
 
     # -----------------------------------------------------------------
     # Write header

@@ -497,9 +497,9 @@ def handle_range_input(graph: IRGraph, start: int, step: int, shape: list, dtype
     range_fill_counter += 1
     return tensor
 
-def fill_IRGraph(model_data, shapes, offset_map, hierarchial, graph_name) -> IRGraph:
+def fill_IRGraph(model_data, shapes, offset_map, isHierarchial, graph_name) -> IRGraph:
     graph = IRGraph(graph_name)
-    source_map = OPTYPE_TO_PI if hierarchial else OPTYPE_TO_H
+    source_map = OPTYPE_TO_PI if isHierarchial else OPTYPE_TO_H
 
     initializer_dtype_map = {
         name: _ONNX_DTYPE_TO_STR.get(dtype_int, "float")

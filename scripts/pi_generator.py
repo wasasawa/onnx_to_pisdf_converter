@@ -88,8 +88,8 @@ RATE_EXPRESSIONS = {
     # -------------------------------------------------------------------------
     "relu": {
         "src_rates":  {"input_0": "size"},
-        "inputs":     {"input_0": "size"},
-        "outputs":    {"output_0": "size"},
+        "inputs":     {"input_0": "1"},
+        "outputs":    {"output_0": "1"},
         "snk_rates":  {"output_0": "size"},
     },
     "sigmoid": {
@@ -116,8 +116,8 @@ RATE_EXPRESSIONS = {
     # -------------------------------------------------------------------------
     "softmax": {
         "src_rates":  {"input_0": "size"},
-        "inputs":     {"input_0": "size"},
-        "outputs":    {"output_0": "size"},
+        "inputs":     {"input_0": "1"},
+        "outputs":    {"output_0": "1"},
         "snk_rates":  {"output_0": "size"},
     },
 
@@ -131,8 +131,8 @@ RATE_EXPRESSIONS = {
     # -------------------------------------------------------------------------
     "add_same": {
         "src_rates":  {"input_0": "size1", "input_1": "size1"},
-        "inputs":     {"input_0": "size1",     "input_1": "size1"},
-        "outputs":    {"output_0": "size1"},
+        "inputs":     {"input_0": "1",     "input_1": "1"},
+        "outputs":    {"output_0": "1"},
         "snk_rates":  {"output_0": "size1"},
     },
     "add_bias": {
@@ -155,16 +155,13 @@ RATE_EXPRESSIONS = {
     },
 
     # -------------------------------------------------------------------------
-    # MatMul — fires M*N times (one output element per firing)
-    # input_0: one row of A per firing (K elements), total M*N rows consumed
-    #   but each row is reused N times → src produces M*K, actor fires M*N
-    #   PREESM handles the reuse via broadcast
-    # weight_0: one col of B per firing (K elements), total M*N cols consumed
-    #   each col reused M times → src produces N*K
+    # MatMul — fires M times (one output row per firing)
+    # input_0: split M rows of K elements each
+    # input_1: full B matrix (K×N), broadcast to all M firings by PREESM
     # -------------------------------------------------------------------------
     "matmul": {
-        "src_rates":  {"input_0": "M * K", "input_1": "N * K"},
-        "inputs":     {"input_0": "K",     "input_1": "K*N"},
+        "src_rates":  {"input_0": "M * K", "input_1": "K * N"},
+        "inputs":     {"input_0": "K",     "input_1": "K * N"},
         "outputs":    {"output_0": "N"},
         "snk_rates":  {"output_0": "M * N"},
     },
@@ -186,8 +183,8 @@ RATE_EXPRESSIONS = {
     },
     "flatten": {
         "src_rates":  {"input_0": "inputSize"},
-        "inputs":     {"input_0": "inputSize"},
-        "outputs":    {"output_0": "outputSize"},
+        "inputs":     {"input_0": "1"},
+        "outputs":    {"output_0": "1"},
         "snk_rates":  {"output_0": "outputSize"},
     },
 
@@ -211,12 +208,15 @@ RATE_EXPRESSIONS = {
         "snk_rates":  {"output_0": "size1 + size2"},
     },
     # -------------------------------------------------------------------------
-    # gemm — 
+    # Gemm — fires M times (one output row per firing)
+    # input_0: split M rows of K elements each
+    # input_1: full B matrix (K×N), broadcast to all M firings by PREESM
+    # input_2: full bias (sizeC), broadcast to all M firings by PREESM
     # -------------------------------------------------------------------------
     "gemm": {
         "src_rates":  {"input_0": "M * K", "input_1": "K * N", "input_2": "sizeC"},
-        "inputs":     {"input_0": "M * K", "input_1": "K * N", "input_2": "sizeC"},
-        "outputs":    {"output_0": "M * N"},
+        "inputs":     {"input_0": "K",     "input_1": "K * N", "input_2": "sizeC"},
+        "outputs":    {"output_0": "N"},
         "snk_rates":  {"output_0": "M * N"},
     },
 }
@@ -236,6 +236,13 @@ SKIP_OPS = {
     OpType.CONSTANT_FILL,
     OpType.RANGE_FILL,
     OpType.POLICYNET,
+    # OpType.ADD_SAME,
+    # OpType.AVGPOOL2D,
+    # OpType.GLOBAL_AVGPOOL,
+    # OpType.SIGMOID,
+    OpType.FLATTEN,
+#     OpType.RELU,
+    OpType.CONCAT,
 }
 
 
@@ -266,15 +273,15 @@ def _get_actor_out_expr(rate_exprs: dict, port_name: str, fallback: int) -> str:
     return rate_exprs.get("outputs", {}).get(port_name, str(fallback))
 
 
-def generate_pi_file(actor: IRActor, output_dir: str) -> str:
+def generate_pi_file(actor: IRActor,isGeneratedKernels, graph_name, output_dir: str) -> str:
     op_name    = _get_op_name(actor) 
     rate_exprs = RATE_EXPRESSIONS.get(op_name, {})
     if any(p.name == "keep" for p, _ in actor.params):
         op_name = f"dy_{op_name}"
     pi_path    = os.path.join(output_dir, f"{op_name}.pi") # use PI dict?
     loop_name  = OPTYPE_TO_LOOP_FN[actor.op_type]
-    inner_name = f"{loop_name}_neuron"
-    h_source   = OPTYPE_TO_H[actor.op_type]
+    inner_name = f"{loop_name}_neuron" if not isGeneratedKernels else loop_name
+    h_source   = OPTYPE_TO_H[actor.op_type] if not isGeneratedKernels else f"/Code/include/runtime/{graph_name}_actors.h" 
 
     root     = Element("graphml", attrib={"xmlns": "http://graphml.graphdrawing.org/xmlns"})
     graph_el = SubElement(root, "graph", attrib={"edgedefault": "directed"})
@@ -422,7 +429,7 @@ def generate_pi_file(actor: IRActor, output_dir: str) -> str:
     return pi_path
 
 
-def generate_all_pi_files(graph: IRGraph, output_dir: str = "../sources.pi"):
+def generate_all_pi_files(graph: IRGraph,isGeneratedKernels,graph_name, output_dir: str = "../sources.pi"):
     seen = set()
     for actor in graph.actors:
         if actor.op_type in SKIP_OPS :
@@ -431,6 +438,6 @@ def generate_all_pi_files(graph: IRGraph, output_dir: str = "../sources.pi"):
         is_dynamic = any(p.name == "keep" for p, _ in actor.params)
         dynamic_key = f"dy_{op_name}" if is_dynamic else op_name
         if dynamic_key not in seen:
-            path = generate_pi_file(actor, output_dir)
+            path = generate_pi_file(actor,isGeneratedKernels, graph_name, output_dir)
             print(f"  Generated {path}")
             seen.add(dynamic_key)

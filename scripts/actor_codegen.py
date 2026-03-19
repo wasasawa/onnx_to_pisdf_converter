@@ -49,13 +49,12 @@ class ActorCodegen(ABC):
     @staticmethod
     def _cache_qualifier(parallel: bool) -> str:
         """Storage qualifier for the static cache map."""
-        return "thread_local static" if parallel else "static"
+        return "thread_local static" if parallel else "thread_local static"
 
     @staticmethod
     def _omp_preamble(parallel: bool) -> str:
-        """omp_set_num_threads(1) preamble for oneDNN ops in parallel mode."""
-        if parallel:
-            return "    omp_set_num_threads(1);\n\n"
+        """omp_set_num_threads(1) is emitted once at static init in model_codegen.py,
+        not inside each actor invocation.  Return empty string."""
         return ""
 
 
@@ -84,15 +83,17 @@ class Conv2DCodegen(ActorCodegen):
         return f"""\
 void {fn}({sig})
 {{
-{omp}\
     using namespace dnnl;
     struct _Entry {{
         convolution_forward prim;
         memory              weights_mem;
-        bool                ready = false;
+        memory::desc        weights_desc_optimal;
+        memory::desc        src_md, dst_md;          // cached — never changes
+        bool                ready           = false;
+        const void*         last_weight_ptr = nullptr;
     }};
-    {cq} std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
-    auto& _e = _cache[{{std::vector<int>{{{kn}}}, (const void*)input_1}}];
+    {cq} std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[std::vector<int>{{{kn}}}];
 
     if (!_e.ready) {{
         auto& eng = rt::cpu_engine();
@@ -104,31 +105,35 @@ void {fn}({sig})
         memory::dims pad_l    = {{padTop, padLeft}};
         memory::dims pad_r    = {{padBottom, padRight}};
 
-        auto src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
-        auto w_any  = memory::desc(w_dims,   memory::data_type::f32, memory::format_tag::any);
-        auto dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
+        _e.src_md = memory::desc(src_dims, memory::data_type::f32, memory::format_tag::nchw);
+        _e.dst_md = memory::desc(dst_dims, memory::data_type::f32, memory::format_tag::nchw);
+        auto w_any = memory::desc(w_dims,  memory::data_type::f32, memory::format_tag::any);
 
         auto pd = convolution_forward::primitive_desc(eng,
             prop_kind::forward_inference,
             algorithm::convolution_direct,
-            src_md, w_any, dst_md,
+            _e.src_md, w_any, _e.dst_md,
             strides, dils, pad_l, pad_r);
 
-        auto w_plain   = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
-        _e.weights_mem = rt::reorder_to_optimal(input_1, w_plain, pd.weights_desc());
-        _e.prim  = convolution_forward(pd);
-        _e.ready = true;
+        _e.weights_desc_optimal = pd.weights_desc();
+        auto w_plain            = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+        _e.weights_mem          = rt::reorder_to_optimal(input_1, w_plain, _e.weights_desc_optimal);
+        _e.prim                 = convolution_forward(pd);
+        _e.last_weight_ptr      = input_1;
+        _e.ready                = true;
+    }} else if (_e.last_weight_ptr != input_1) {{
+        // Primitive reused — only redo the weight reorder (FIFO ptr changed).
+        memory::dims w_dims = {{{w_oc}, depthInput, sizeKernelHeight, sizeKernelWidth}};
+        auto w_plain        = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+        _e.weights_mem      = rt::reorder_to_optimal(input_1, w_plain, _e.weights_desc_optimal);
+        _e.last_weight_ptr  = input_1;
     }}
 
     auto& stm = rt::cpu_stream();
-    auto src_md = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
-                               memory::data_type::f32, memory::format_tag::nchw);
-    auto dst_md = memory::desc({{1, {d_oc}, outputHeight, outputWidth}},
-                               memory::data_type::f32, memory::format_tag::nchw);
     _e.prim.execute(stm, {{
-        {{DNNL_ARG_SRC,     rt::wrap(input_0,  src_md)}},
+        {{DNNL_ARG_SRC,     rt::wrap(input_0,  _e.src_md)}},
         {{DNNL_ARG_WEIGHTS, _e.weights_mem}},
-        {{DNNL_ARG_DST,     rt::wrap(output_0, dst_md)}},
+        {{DNNL_ARG_DST,     rt::wrap(output_0, _e.dst_md)}},
     }});
     stm.wait();
 }}
@@ -157,15 +162,17 @@ class Conv2DBiasCodegen(ActorCodegen):
         return f"""\
 void {fn}({sig})
 {{
-{omp}\
     using namespace dnnl;
     struct _Entry {{
         convolution_forward prim;
         memory              weights_mem;
-        bool                ready = false;
+        memory::desc        weights_desc_optimal;
+        memory::desc        src_md, bias_md, dst_md;  // cached — never changes
+        bool                ready           = false;
+        const void*         last_weight_ptr = nullptr;
     }};
-    {cq} std::map<std::pair<std::vector<int>, const void*>, _Entry> _cache;
-    auto& _e = _cache[{{std::vector<int>{{{kn}}}, (const void*)input_1}}];
+    {cq} std::map<std::vector<int>, _Entry> _cache;
+    auto& _e = _cache[std::vector<int>{{{kn}}}];
 
     if (!_e.ready) {{
         auto& eng = rt::cpu_engine();
@@ -178,35 +185,37 @@ void {fn}({sig})
         memory::dims pad_l     = {{padTop, padLeft}};
         memory::dims pad_r     = {{padBottom, padRight}};
 
-        auto src_md  = memory::desc(src_dims,  memory::data_type::f32, memory::format_tag::nchw);
-        auto w_any   = memory::desc(w_dims,    memory::data_type::f32, memory::format_tag::any);
-        auto bias_md = memory::desc(bias_dims, memory::data_type::f32, memory::format_tag::a);
-        auto dst_md  = memory::desc(dst_dims,  memory::data_type::f32, memory::format_tag::nchw);
+        _e.src_md  = memory::desc(src_dims,  memory::data_type::f32, memory::format_tag::nchw);
+        _e.bias_md = memory::desc(bias_dims, memory::data_type::f32, memory::format_tag::a);
+        _e.dst_md  = memory::desc(dst_dims,  memory::data_type::f32, memory::format_tag::nchw);
+        auto w_any = memory::desc(w_dims,    memory::data_type::f32, memory::format_tag::any);
 
         auto pd = convolution_forward::primitive_desc(eng,
             prop_kind::forward_inference,
             algorithm::convolution_direct,
-            src_md, w_any, bias_md, dst_md,
+            _e.src_md, w_any, _e.bias_md, _e.dst_md,
             strides, dils, pad_l, pad_r);
 
-        auto w_plain   = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
-        _e.weights_mem = rt::reorder_to_optimal(input_1, w_plain, pd.weights_desc());
-        _e.prim  = convolution_forward(pd);
-        _e.ready = true;
+        _e.weights_desc_optimal = pd.weights_desc();
+        auto w_plain            = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+        _e.weights_mem          = rt::reorder_to_optimal(input_1, w_plain, _e.weights_desc_optimal);
+        _e.prim                 = convolution_forward(pd);
+        _e.last_weight_ptr      = input_1;
+        _e.ready                = true;
+    }} else if (_e.last_weight_ptr != input_1) {{
+        // Primitive reused — only redo the weight reorder (FIFO ptr changed).
+        memory::dims w_dims = {{{w_oc}, depthInput, sizeKernelHeight, sizeKernelWidth}};
+        auto w_plain        = memory::desc(w_dims, memory::data_type::f32, memory::format_tag::oihw);
+        _e.weights_mem      = rt::reorder_to_optimal(input_1, w_plain, _e.weights_desc_optimal);
+        _e.last_weight_ptr  = input_1;
     }}
 
     auto& stm = rt::cpu_stream();
-    auto src_md  = memory::desc({{1, depthInput,  inputHeight,  inputWidth}},
-                                memory::data_type::f32, memory::format_tag::nchw);
-    auto bias_md = memory::desc({{{b_oc}}},
-                                memory::data_type::f32, memory::format_tag::a);
-    auto dst_md  = memory::desc({{1, {d_oc}, outputHeight, outputWidth}},
-                                memory::data_type::f32, memory::format_tag::nchw);
     _e.prim.execute(stm, {{
-        {{DNNL_ARG_SRC,     rt::wrap(input_0,  src_md)}},
+        {{DNNL_ARG_SRC,     rt::wrap(input_0,  _e.src_md)}},
         {{DNNL_ARG_WEIGHTS, _e.weights_mem}},
-        {{DNNL_ARG_BIAS,    rt::wrap(input_2,  bias_md)}},
-        {{DNNL_ARG_DST,     rt::wrap(output_0, dst_md)}},
+        {{DNNL_ARG_BIAS,    rt::wrap(input_2,  _e.bias_md)}},
+        {{DNNL_ARG_DST,     rt::wrap(output_0, _e.dst_md)}},
     }});
     stm.wait();
 }}
@@ -236,20 +245,19 @@ class MaxPool2DCodegen(ActorCodegen):
         return f"""\
 void {fn}({sig})
 {{
-{omp}\
     using namespace dnnl;
-    struct _Entry {{ pooling_forward prim; bool ready = false; }};
+    struct _Entry {{ pooling_forward prim; memory::desc src_md, dst_md; bool ready = false; }};
     {cq} std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
-        auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
-                                   memory::data_type::f32, memory::format_tag::nchw);
-        auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
-                                   memory::data_type::f32, memory::format_tag::nchw);
+        _e.src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
+                                 memory::data_type::f32, memory::format_tag::nchw);
+        _e.dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
+                                 memory::data_type::f32, memory::format_tag::nchw);
         auto pd = pooling_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference, algorithm::pooling_max,
-            src_md, dst_md,
+            _e.src_md, _e.dst_md,
             {{strideHeight, strideWidth}}, {{poolHeight, poolWidth}},
             {{0, 0}},
             {{padTop, padLeft}}, {{padBottom, padRight}});
@@ -258,12 +266,8 @@ void {fn}({sig})
     }}
 
     auto& stm = rt::cpu_stream();
-    auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
-                               memory::data_type::f32, memory::format_tag::nchw);
-    auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
-                               memory::data_type::f32, memory::format_tag::nchw);
-    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, src_md)}},
-                           {{DNNL_ARG_DST, rt::wrap(output_0, dst_md)}}}});
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, _e.src_md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, _e.dst_md)}}}});
     stm.wait();
 }}
 """
@@ -288,9 +292,8 @@ class AvgPool2DCodegen(ActorCodegen):
         return f"""\
 void {fn}({sig})
 {{
-{omp}\
     using namespace dnnl;
-    struct _Entry {{ pooling_forward prim; bool ready = false; }};
+    struct _Entry {{ pooling_forward prim; memory::desc src_md, dst_md; bool ready = false; }};
     {cq} std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
@@ -298,13 +301,13 @@ void {fn}({sig})
         auto alg = (countIncludePad != 0)
             ? algorithm::pooling_avg_include_padding
             : algorithm::pooling_avg_exclude_padding;
-        auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
-                                   memory::data_type::f32, memory::format_tag::nchw);
-        auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
-                                   memory::data_type::f32, memory::format_tag::nchw);
+        _e.src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
+                                 memory::data_type::f32, memory::format_tag::nchw);
+        _e.dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
+                                 memory::data_type::f32, memory::format_tag::nchw);
         auto pd = pooling_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference, alg,
-            src_md, dst_md,
+            _e.src_md, _e.dst_md,
             {{strideHeight, strideWidth}}, {{poolHeight, poolWidth}},
             {{0, 0}},
             {{padTop, padLeft}}, {{padBottom, padRight}});
@@ -313,12 +316,8 @@ void {fn}({sig})
     }}
 
     auto& stm = rt::cpu_stream();
-    auto src_md = memory::desc({{1, {ch},  inputHeight,  inputWidth}},
-                               memory::data_type::f32, memory::format_tag::nchw);
-    auto dst_md = memory::desc({{1, {ch},  outputHeight, outputWidth}},
-                               memory::data_type::f32, memory::format_tag::nchw);
-    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, src_md)}},
-                           {{DNNL_ARG_DST, rt::wrap(output_0, dst_md)}}}});
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, _e.src_md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, _e.dst_md)}}}});
     stm.wait();
 }}
 """
@@ -389,23 +388,22 @@ void {fn}({sig})
 void {fn}({sig})
 {{
     using namespace dnnl;
-    struct _Entry {{ eltwise_forward prim; bool ready = false; }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    struct _Entry {{ eltwise_forward prim; memory::desc md; bool ready = false; }};
+    thread_local static std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
-        auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
-        auto pd = eltwise_forward::primitive_desc(rt::cpu_engine(),
+        _e.md    = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd  = eltwise_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference,
-            algorithm::eltwise_relu, md, md, 0.f, 0.f);
+            algorithm::eltwise_relu, _e.md, _e.md, 0.f, 0.f);
         _e.prim  = eltwise_forward(pd);
         _e.ready = true;
     }}
 
-    auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
     auto& stm = rt::cpu_stream();
-    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
-                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, _e.md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, _e.md)}}}});
     stm.wait();
 }}
 """
@@ -435,23 +433,22 @@ void {fn}({sig})
 void {fn}({sig})
 {{
     using namespace dnnl;
-    struct _Entry {{ eltwise_forward prim; bool ready = false; }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    struct _Entry {{ eltwise_forward prim; memory::desc md; bool ready = false; }};
+    thread_local static std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
-        auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
-        auto pd = eltwise_forward::primitive_desc(rt::cpu_engine(),
+        _e.md    = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd  = eltwise_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference,
-            algorithm::eltwise_logistic, md, md, 0.f, 0.f);
+            algorithm::eltwise_logistic, _e.md, _e.md, 0.f, 0.f);
         _e.prim  = eltwise_forward(pd);
         _e.ready = true;
     }}
 
-    auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
     auto& stm = rt::cpu_stream();
-    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
-                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, _e.md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, _e.md)}}}});
     stm.wait();
 }}
 """
@@ -483,23 +480,22 @@ void {fn}({sig})
 void {fn}({sig})
 {{
     using namespace dnnl;
-    struct _Entry {{ eltwise_forward prim; bool ready = false; }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    struct _Entry {{ eltwise_forward prim; memory::desc md; bool ready = false; }};
+    thread_local static std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
-        auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
-        auto pd = eltwise_forward::primitive_desc(rt::cpu_engine(),
+        _e.md    = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd  = eltwise_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference,
-            algorithm::eltwise_tanh, md, md, 0.f, 0.f);
+            algorithm::eltwise_tanh, _e.md, _e.md, 0.f, 0.f);
         _e.prim  = eltwise_forward(pd);
         _e.ready = true;
     }}
 
-    auto md = memory::desc({{size}}, memory::data_type::f32, memory::format_tag::a);
     auto& stm = rt::cpu_stream();
-    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
-                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, _e.md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, _e.md)}}}});
     stm.wait();
 }}
 """
@@ -564,24 +560,23 @@ void {fn}({sig})
 void {fn}({sig})
 {{
     using namespace dnnl;
-    struct _Entry {{ dnnl::binary prim; bool ready = false; }};
-    static std::map<std::vector<int>, _Entry> _cache;
+    struct _Entry {{ dnnl::binary prim; memory::desc md; bool ready = false; }};
+    thread_local static std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
-        auto md = memory::desc({{size1}}, memory::data_type::f32, memory::format_tag::a);
-        auto pd = dnnl::binary::primitive_desc(rt::cpu_engine(),
-            algorithm::binary_add, md, md, md);
+        _e.md    = memory::desc({{size1}}, memory::data_type::f32, memory::format_tag::a);
+        auto pd  = dnnl::binary::primitive_desc(rt::cpu_engine(),
+            algorithm::binary_add, _e.md, _e.md, _e.md);
         _e.prim  = dnnl::binary(pd);
         _e.ready = true;
     }}
 
-    auto md = memory::desc({{size1}}, memory::data_type::f32, memory::format_tag::a);
     auto& stm = rt::cpu_stream();
     _e.prim.execute(stm, {{
-        {{DNNL_ARG_SRC_0, rt::wrap(input_0, md)}},
-        {{DNNL_ARG_SRC_1, rt::wrap(input_1, md)}},
-        {{DNNL_ARG_DST,   rt::wrap(output_0, md)}},
+        {{DNNL_ARG_SRC_0, rt::wrap(input_0, _e.md)}},
+        {{DNNL_ARG_SRC_1, rt::wrap(input_1, _e.md)}},
+        {{DNNL_ARG_DST,   rt::wrap(output_0, _e.md)}},
     }});
     stm.wait();
 }}
@@ -705,7 +700,6 @@ class MatMulCodegen(ActorCodegen):
             return f"""\
 void {fn}({sig})
 {{
-    omp_set_num_threads(1);
     // C[1 x N] = A[1 x K] * B[K x N]
     rt::sgemm(false, false, 1, N, K,
               1.0f, input_0, K,
@@ -747,7 +741,6 @@ class GemmCodegen(ActorCodegen):
             return f"""\
 void {fn}({sig})
 {{
-    omp_set_num_threads(1);
     // Parallel: one row per firing (M=1).
     // Y[1 x N] = alpha * A[1 x K] * B[K x N] + beta * C
     std::memcpy(output_0, input_2, sizeC * sizeof(float));
@@ -799,27 +792,24 @@ class SoftmaxCodegen(ActorCodegen):
         return f"""\
 void {fn}({sig})
 {{
-{omp}\
     using namespace dnnl;
-    struct _Entry {{ softmax_forward prim; bool ready = false; }};
+    struct _Entry {{ softmax_forward prim; memory::desc md; bool ready = false; }};
     {cq} std::map<std::vector<int>, _Entry> _cache;
     auto& _e = _cache[{{{kn}}}];
 
     if (!_e.ready) {{
-        auto md = memory::desc({{outerSize, size / outerSize}},
+        _e.md    = memory::desc({{outerSize, size / outerSize}},
                                memory::data_type::f32, memory::format_tag::ab);
-        auto pd = softmax_forward::primitive_desc(rt::cpu_engine(),
+        auto pd  = softmax_forward::primitive_desc(rt::cpu_engine(),
             prop_kind::forward_inference, algorithm::softmax_accurate,
-            md, md, /*axis=*/1);
+            _e.md, _e.md, /*axis=*/1);
         _e.prim  = softmax_forward(pd);
         _e.ready = true;
     }}
 
-    auto md = memory::desc({{outerSize, size / outerSize}},
-                           memory::data_type::f32, memory::format_tag::ab);
     auto& stm = rt::cpu_stream();
-    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, md)}},
-                           {{DNNL_ARG_DST, rt::wrap(output_0, md)}}}});
+    _e.prim.execute(stm, {{{{DNNL_ARG_SRC, rt::wrap(input_0, _e.md)}},
+                           {{DNNL_ARG_DST, rt::wrap(output_0, _e.md)}}}});
     stm.wait();
 }}
 """
@@ -965,7 +955,6 @@ class BatchNormCodegen(ActorCodegen):
         return f"""\
 void {fn}({sig})
 {{
-{omp}\
     using namespace dnnl;
     // 'epsilon' is accepted as int to match the cfg_input port but its value
     // is unusable (float→int truncation). A fixed standard value is used.
@@ -973,6 +962,7 @@ void {fn}({sig})
     struct _Entry {{
         batch_normalization_forward prim;
         memory                      scale_shift_mem;
+        memory::desc                md, md1;         // cached — never changes
         bool                        ready = false;
     }};
     {cq} std::map<std::vector<int>, _Entry> _cache;
@@ -980,10 +970,12 @@ void {fn}({sig})
 
     if (!_e.ready) {{
         auto& eng = rt::cpu_engine();
-        auto md = memory::desc({{1, channels, spatialSize}},
-                               memory::data_type::f32, memory::format_tag::abc);
+        _e.md  = memory::desc({{1, channels, spatialSize}},
+                              memory::data_type::f32, memory::format_tag::abc);
+        _e.md1 = memory::desc({{channels}},
+                              memory::data_type::f32, memory::format_tag::a);
         auto pd = batch_normalization_forward::primitive_desc(eng,
-            prop_kind::forward_inference, md, md, kEps,
+            prop_kind::forward_inference, _e.md, _e.md, kEps,
             normalization_flags::use_scale |
             normalization_flags::use_shift |
             normalization_flags::use_global_stats);
@@ -998,16 +990,12 @@ void {fn}({sig})
     std::memcpy(ss + channels,  input_2, channels * sizeof(float));
 
     auto& stm = rt::cpu_stream();
-    auto md  = memory::desc({{1, channels, spatialSize}},
-                            memory::data_type::f32, memory::format_tag::abc);
-    auto md1 = memory::desc({{channels}},
-                            memory::data_type::f32, memory::format_tag::a);
     _e.prim.execute(stm, {{
-        {{DNNL_ARG_SRC,         rt::wrap(input_0, md)}},
-        {{DNNL_ARG_MEAN,        rt::wrap(input_3, md1)}},
-        {{DNNL_ARG_VARIANCE,    rt::wrap(input_4, md1)}},
+        {{DNNL_ARG_SRC,         rt::wrap(input_0, _e.md)}},
+        {{DNNL_ARG_MEAN,        rt::wrap(input_3, _e.md1)}},
+        {{DNNL_ARG_VARIANCE,    rt::wrap(input_4, _e.md1)}},
         {{DNNL_ARG_SCALE_SHIFT, _e.scale_shift_mem}},
-        {{DNNL_ARG_DST,         rt::wrap(output_0, md)}},
+        {{DNNL_ARG_DST,         rt::wrap(output_0, _e.md)}},
     }});
     stm.wait();
 }}

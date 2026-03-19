@@ -1,5 +1,6 @@
 #pragma once
 #include <dnnl.hpp>
+#include <omp.h>
 
 // ---------------------------------------------------------------------------
 // Global engine / stream — created once per process.
@@ -8,12 +9,15 @@
 namespace rt {
 
 inline dnnl::engine& cpu_engine() {
-    static dnnl::engine eng(dnnl::engine::kind::cpu, 0);
+    static dnnl::engine eng = []() {
+        omp_set_num_threads(1);
+        return dnnl::engine(dnnl::engine::kind::cpu, 0);
+    }();
     return eng;
 }
 
 inline dnnl::stream& cpu_stream() {
-    static dnnl::stream stm(cpu_engine());
+    thread_local static dnnl::stream stm(cpu_engine());
     return stm;
 }
 

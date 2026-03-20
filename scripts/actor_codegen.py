@@ -57,6 +57,20 @@ class ActorCodegen(ABC):
         not inside each actor invocation.  Return empty string."""
         return ""
 
+    @staticmethod
+    def _grain_name(actor: IRActor) -> str:
+        """Return 'grain_ch', 'grain', or '' depending on coarse-rate params.
+
+        coarsen_graph() attaches one of these to applicable actors before
+        code generation.  When present the generated parallel body uses the
+        param as the per-firing element/channel count instead of the
+        hard-coded scalar '1'.
+        """
+        for port, _ in actor.params:
+            if port.name in ("grain_ch", "grain"):
+                return port.name
+        return ""
+
 
 # ===========================================================================
 # Convolution
@@ -76,14 +90,19 @@ class Conv2DCodegen(ActorCodegen):
         kn  = self._key_names(actor)
         cq  = self._cache_qualifier(parallel)
         omp = self._omp_preamble(parallel)
-        # In parallel mode, each firing processes 1 output channel
-        w_oc  = "1" if parallel else "depthOutput"
-        d_oc  = "1" if parallel else "depthOutput"
+        # Coarse parallel: grain_ch output channels per firing.
+        # Fine parallel (no grain param): 1 output channel per firing.
+        g     = self._grain_name(actor) if parallel else ""
+        w_oc  = g or ("1" if parallel else "depthOutput")
+        d_oc  = w_oc
 
         return f"""\
 void {fn}({sig})
 {{
     using namespace dnnl;
+    // Cache key = shape only.  Spider2 DELAYED mode reallocates FIFOs each
+    // iteration, so the weight pointer changes; we cache only the primitive
+    // and redo the cheap reorder when the pointer changes.
     struct _Entry {{
         convolution_forward prim;
         memory              weights_mem;
@@ -154,15 +173,20 @@ class Conv2DBiasCodegen(ActorCodegen):
         kn  = self._key_names(actor)
         cq  = self._cache_qualifier(parallel)
         omp = self._omp_preamble(parallel)
-        # In parallel mode, each firing processes 1 output channel
-        w_oc = "1" if parallel else "depthOutput"
-        d_oc = "1" if parallel else "depthOutput"
-        b_oc = "1" if parallel else "depthOutput"
+        # Coarse parallel: grain_ch output channels per firing.
+        # Fine parallel (no grain param): 1 output channel per firing.
+        g    = self._grain_name(actor) if parallel else ""
+        w_oc = g or ("1" if parallel else "depthOutput")
+        d_oc = w_oc
+        b_oc = w_oc
 
         return f"""\
 void {fn}({sig})
 {{
     using namespace dnnl;
+    // Cache key = shape only.  Spider2 DELAYED mode reallocates FIFOs each
+    // iteration, so the weight pointer changes; we cache only the primitive
+    // and redo the cheap reorder when the pointer changes.
     struct _Entry {{
         convolution_forward prim;
         memory              weights_mem;
@@ -239,8 +263,9 @@ class MaxPool2DCodegen(ActorCodegen):
         kn  = self._key_names(actor)
         cq  = self._cache_qualifier(parallel)
         omp = self._omp_preamble(parallel)
-        # In parallel mode, each firing processes 1 channel
-        ch = "1" if parallel else "depthInput"
+        # Coarse parallel: grain_ch channels per firing. Fine: 1 channel.
+        g  = self._grain_name(actor) if parallel else ""
+        ch = g or ("1" if parallel else "depthInput")
 
         return f"""\
 void {fn}({sig})
@@ -286,8 +311,9 @@ class AvgPool2DCodegen(ActorCodegen):
         kn  = self._key_names(actor)
         cq  = self._cache_qualifier(parallel)
         omp = self._omp_preamble(parallel)
-        # In parallel mode, each firing processes 1 channel
-        ch = "1" if parallel else "depthInput"
+        # Coarse parallel: grain_ch channels per firing. Fine: 1 channel.
+        g  = self._grain_name(actor) if parallel else ""
+        ch = g or ("1" if parallel else "depthInput")
 
         return f"""\
 void {fn}({sig})
@@ -336,7 +362,21 @@ class GlobalAvgPoolCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
-            # Each firing processes 1 channel: spatialSize → 1 output
+            g = self._grain_name(actor)
+            if g:
+                # Coarse: grain_ch channels per firing
+                return f"""\
+void {fn}({sig})
+{{
+    for (int c = 0; c < {g}; ++c) {{
+        float sum = 0.0f;
+        const float* src = input_0 + c * spatialSize;
+        for (int i = 0; i < spatialSize; ++i) sum += src[i];
+        output_0[c] = sum / static_cast<float>(spatialSize);
+    }}
+}}
+"""
+            # Fine: 1 channel per firing
             return f"""\
 void {fn}({sig})
 {{
@@ -376,7 +416,16 @@ class ReluCodegen(ActorCodegen):
         kn  = self._key_names(actor)
 
         if parallel:
-            # Each firing processes 1 element — scalar is faster than oneDNN
+            g = self._grain_name(actor)
+            if g:
+                return f"""\
+void {fn}({sig})
+{{
+    for (int i = 0; i < {g}; ++i)
+        output_0[i] = input_0[i] > 0.f ? input_0[i] : 0.f;
+}}
+"""
+            # Fine: 1 element per firing
             return f"""\
 void {fn}({sig})
 {{
@@ -422,6 +471,15 @@ class SigmoidCodegen(ActorCodegen):
         kn  = self._key_names(actor)
 
         if parallel:
+            g = self._grain_name(actor)
+            if g:
+                return f"""\
+void {fn}({sig})
+{{
+    for (int i = 0; i < {g}; ++i)
+        output_0[i] = 1.0f / (1.0f + std::exp(-input_0[i]));
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -468,7 +526,15 @@ class TanhCodegen(ActorCodegen):
         kn  = self._key_names(actor)
 
         if parallel:
-            # Each firing processes 1 element — scalar is faster than oneDNN
+            g = self._grain_name(actor)
+            if g:
+                return f"""\
+void {fn}({sig})
+{{
+    for (int i = 0; i < {g}; ++i)
+        output_0[i] = std::tanh(input_0[i]);
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -514,7 +580,14 @@ class DropoutCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
-            # Each firing processes 1 element
+            g = self._grain_name(actor)
+            if g:
+                return f"""\
+void {fn}({sig})
+{{
+    std::memcpy(output_0, input_0, {g} * sizeof(float));
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -549,6 +622,15 @@ class AddSameCodegen(ActorCodegen):
         kn  = self._key_names(actor)
 
         if parallel:
+            g = self._grain_name(actor)
+            if g:
+                return f"""\
+void {fn}({sig})
+{{
+    for (int i = 0; i < {g}; ++i)
+        output_0[i] = input_0[i] + input_1[i];
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -596,6 +678,17 @@ class AddBiasCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
+            g = self._grain_name(actor)
+            if g:
+                # COARSE_RATE_EXPRESSIONS gives grain tokens of input_1 per firing,
+                # so bias cycles within the grain slice — no modulo needed.
+                return f"""\
+void {fn}({sig})
+{{
+    for (int i = 0; i < {g}; ++i)
+        output_0[i] = input_0[i] + input_1[i];
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -626,6 +719,17 @@ class AddScalarCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
+            g = self._grain_name(actor)
+            if g:
+                # input_1 rate is "1" in coarse rates — scalar broadcast.
+                return f"""\
+void {fn}({sig})
+{{
+    const float s = input_1[0];
+    for (int i = 0; i < {g}; ++i)
+        output_0[i] = input_0[i] + s;
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -656,7 +760,16 @@ class AddGenericCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
-            # Each firing processes 1 element from each input
+            g = self._grain_name(actor)
+            if g:
+                # Both inputs have grain tokens in coarse mode.
+                return f"""\
+void {fn}({sig})
+{{
+    for (int i = 0; i < {g}; ++i)
+        output_0[i] = input_0[i] + input_1[i];
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -696,12 +809,14 @@ class MatMulCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
-            # Each firing: 1 row of A (K) × full B (K×N) → 1 row of C (N)
+            g = self._grain_name(actor)
+            rows = g if g else "1"
+            comment = f"C[{rows} x N] = A[{rows} x K] * B[K x N]"
             return f"""\
 void {fn}({sig})
 {{
-    // C[1 x N] = A[1 x K] * B[K x N]
-    rt::sgemm(false, false, 1, N, K,
+    // {comment}
+    rt::sgemm(false, false, {rows}, N, K,
               1.0f, input_0, K,
                     input_1, N,
               0.0f, output_0, N);
@@ -733,22 +848,25 @@ class GemmCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
-            # M firings — each firing computes one output row (1 x N).
-            # input_0: K elements (one row of A)
-            # input_1: K * N elements (full B, broadcast by PREESM)
-            # input_2: sizeC elements (bias, broadcast by PREESM)
-            # output_0: N elements
+            g    = self._grain_name(actor)
+            rows = g if g else "1"
+            # Tile bias across grain rows so sgemm beta-accumulates correctly.
+            bias_init = (
+                f"for (int r = 0; r < {rows}; ++r)\n"
+                f"        std::memcpy(output_0 + r * N, input_2, sizeC * sizeof(float));"
+                if g else
+                "std::memcpy(output_0, input_2, sizeC * sizeof(float));"
+            )
             return f"""\
 void {fn}({sig})
 {{
-    // Parallel: one row per firing (M=1).
-    // Y[1 x N] = alpha * A[1 x K] * B[K x N] + beta * C
-    std::memcpy(output_0, input_2, sizeC * sizeof(float));
+    // Y[{rows} x N] = alpha * A[{rows} x K] * B[K x N] + beta * C
+    {bias_init}
     rt::sgemm(
         transA != 0, transB != 0,
-        1, N, K,
+        {rows}, N, K,
         static_cast<float>(alpha),
-        input_0, transA ? 1 : K,
+        input_0, transA ? {rows} : K,
         input_1, transB ? K : N,
         static_cast<float>(beta),
         output_0, N);
@@ -832,7 +950,15 @@ class ReshapeCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
-            # Each firing processes 1 element
+            g = self._grain_name(actor)
+            if g:
+                return f"""\
+void {fn}({sig})
+{{
+    // input_1 carries shape tensor — ignored at inference.
+    std::memcpy(output_0, input_0, {g} * sizeof(float));
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{
@@ -862,6 +988,14 @@ class FlattenCodegen(ActorCodegen):
         sig = self._full_sig(actor)
 
         if parallel:
+            g = self._grain_name(actor)
+            if g:
+                return f"""\
+void {fn}({sig})
+{{
+    std::memcpy(output_0, input_0, {g} * sizeof(float));
+}}
+"""
             return f"""\
 void {fn}({sig})
 {{

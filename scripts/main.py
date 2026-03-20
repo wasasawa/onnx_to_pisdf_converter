@@ -11,9 +11,11 @@ def main(model_path, isHierarchial = 0, isGeneratedKernels = 1,output_xml="", ou
     graph_name = os.path.splitext(os.path.basename(output_xml))[0]
     graph = fill_IRGraph(model_data, shapes, offset_map, isHierarchial, graph_name)
 
-    graph.print_summary()
-    graph.print_actors()
-    graph.print_edges()
+    # Coarsen FIRST so grain/grain_ch params are on actors before codegen and XML. 
+    #(uncomment below if you want to use it)
+    # if isHierarchial:
+    #     from coarse_rates import coarsen_graph
+    #     coarsen_graph(graph, target_parallelism=4)
 
     #  generate runtime-backed actors and get the per-instance fn names,
     #  or fall back to hand-written headers / OPTYPE_TO_LOOP_FN when disabled
@@ -21,15 +23,20 @@ def main(model_path, isHierarchial = 0, isGeneratedKernels = 1,output_xml="", ou
         loop_fn_map = generate_model_actors(graph, isHierarchial, graph_name)
     else:
         loop_fn_map = None
-    write_xml(graph, model_data, loop_fn_map , output_xml)
+
+    write_xml(graph, model_data, loop_fn_map, output_xml)
 
     n = apply_block_skipping_pass(graph)               # in-place, returns block count
     print(f"Applied BlockDrop pass: {n} residual blocks detected and transformed.")
     write_block_skipping_xml(graph, model_data, "../output_graphs/dy_resnet_blockdrop.pi")
 
     if isHierarchial:
-        generate_all_pi_files(graph,isGeneratedKernels,graph_name, "../sources/pi")
+        generate_all_pi_files(graph, isGeneratedKernels, graph_name, "../sources/pi")
 
+    
+    graph.print_summary()
+    graph.print_actors()
+    graph.print_edges()
     return graph
 
 

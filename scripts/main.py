@@ -1,7 +1,7 @@
 from converter import *
 from block_skipping_pass import write_block_skipping_xml, apply_block_skipping_pass
 from pi_generator import *
-from model_codegen import generate_model_actors
+from model_codegen import generate_model_actors, generate_weight_loader_actors
     
 def main(model_path, isHierarchial = 0, isGeneratedKernels = 1,output_xml="", output_weights="../bin/weights.bin"):
     model_data = parse_onnx_model(model_path)

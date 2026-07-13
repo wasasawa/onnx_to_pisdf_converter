@@ -1,6 +1,9 @@
 from __future__ import annotations
-from structure import IRGraph, IRActor, OpType, OPTYPE_TO_PI
+from structure import IRGraph, IRActor, OpType, OPTYPE_TO_PI, IRParam
 from pi_generator import RATE_EXPRESSIONS, SKIP_OPS
+
+# Name (and node id) of the single global parallelism knob in the top-level .pi.
+TARGET_PARAM = "TargetParallelism"
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -182,28 +185,41 @@ _OP_CONFIG = {
 # 2.  GRAIN COMPUTATION
 # ═════════════════════════════════════════════════════════════════════════
 
-def _best_grain(total: int, target: int) -> int:
+def _divisors(n: int) -> list[int]:
+    """All positive divisors of n, sorted ascending (includes 1 and n)."""
+    ds = set()
+    i = 1
+    while i * i <= n:
+        if n % i == 0:
+            ds.add(i)
+            ds.add(n // i)
+        i += 1
+    return sorted(ds)
+
+
+def _grain_expr(total: int, knob: str = TARGET_PARAM,
+                max_parallelism: int | None = None) -> str:
     """
-    Find G such that total / G ≈ target and total % G == 0.
+    Divisor-floor rule as a PREESM parameter expression.
 
-    Searches outward from the ideal repetition count until a divisor
-    of total is found. Always returns a valid divisor.
+        rep   = largest divisor of `total` that is <= knob   ( >= 1 always )
+              = max over divisors d of ( d * floor(min(knob,d)/d) )
+        grain = total / rep
+
+    The d==1 term is always 1 (for knob >= 1), so it seeds the max and
+    guarantees rep >= 1. Only divisors <= max_parallelism are offered as
+    candidates (None = all), which bounds the expression length for split
+    dimensions with many divisors.
     """
-    if total <= 0 or target <= 0:
-        return max(total, 1)
-    target = min(target, total)
-
-    if total % target == 0:
-        return total // target
-
-    for delta in range(1, total):
-        for rep in (target + delta, target - delta):
-            if rep < 1 or rep > total:
-                continue
-            if total % rep == 0:
-                return total // rep
-
-    return total
+    divs = [d for d in _divisors(total)
+            if max_parallelism is None or d <= max_parallelism]
+    rep = "1"                                   # the d==1 term
+    for d in divs:
+        if d == 1:
+            continue
+        term = f"{d}*floor(min({knob},{d})/{d})"
+        rep = f"max({rep}, {term})"
+    return f"{total} / ({rep})"
 
 
 def _get_param_int(actor: IRActor, name: str) -> int:
@@ -221,13 +237,17 @@ def _get_param_int(actor: IRActor, name: str) -> int:
 # 3.  PUBLIC API
 # ═════════════════════════════════════════════════════════════════════════
 
-def coarsen_graph(graph: IRGraph, target_parallelism: int = 8) -> None:
+def coarsen_graph(graph: IRGraph, target_parallelism: int = 8,
+                  max_parallelism: int | None = None) -> None:
     """
     Prepare the graph for coarse-grained hierarchical .pi generation.
 
     Does two things:
-      1. Patches RATE_EXPRESSIONS in-place with coarse versions
-      2. Attaches a grain / grain_ch IRParam to each applicable actor
+      1. Patches RATE_EXPRESSIONS in-place with coarse versions.
+      2. Adds the single global `TargetParallelism` knob and attaches a derived
+         grain / grain_ch IRParam (grain = divisor_floor(total, TargetParallelism))
+         to each applicable actor, recording the TargetParallelism -> grain
+         param dependency so the top-level .pi can wire it.
 
     Call this BEFORE generate_all_pi_files().
     """
@@ -235,9 +255,19 @@ def coarsen_graph(graph: IRGraph, target_parallelism: int = 8) -> None:
     # Step 1: patch the global RATE_EXPRESSIONS dict
     RATE_EXPRESSIONS.update(COARSE_RATE_EXPRESSIONS)
 
-    # Step 2: attach per-instance grain params
-    P = target_parallelism
+    # Step 2a: the single global knob (clean node id == TARGET_PARAM).
+    knob = IRParam(name=TARGET_PARAM, value=str(target_parallelism),
+                   unique_id=TARGET_PARAM)
+    graph._params[TARGET_PARAM] = knob
 
+    # param -> param dependency edges (source_uid, target_uid); read by the
+    # top-level XML writers via getattr(graph, "_param_deps", []).
+    param_deps = getattr(graph, "_param_deps", None)
+    if param_deps is None:
+        param_deps = []
+        graph._param_deps = param_deps
+
+    # Step 2b: attach a derived grain param to each applicable actor.
     for actor in graph.actors:
         if actor.op_type in SKIP_OPS:
             continue
@@ -252,15 +282,18 @@ def coarsen_graph(graph: IRGraph, target_parallelism: int = 8) -> None:
         param_name, grain_name = config
         if any(p.name == grain_name for p, _ in actor.params):
             continue  # already coarsened
-        
+
         total = _get_param_int(actor, param_name)
         if total <= 0:
             continue
 
-        grain_value = _best_grain(total, P)
-        grain_param = graph.get_or_create_param(grain_name, grain_value)
-        actor.add_param(grain_name, grain_param)
+        # Derived grain param, shared by all actors with the same `total`.
+        uid = f"{grain_name}_{total}"
+        if uid not in graph._params:
+            expr = _grain_expr(total, TARGET_PARAM, max_parallelism)
+            graph._params[uid] = IRParam(name=grain_name, value=expr, unique_id=uid)
+            param_deps.append((TARGET_PARAM, uid))
+        actor.add_param(grain_name, graph._params[uid])
 
-        rep = total // grain_value
-        print(f"  [Coarse] {actor.unique_name}: {param_name}={total}, "
-              f"{grain_name}={grain_value}, rep={rep}")
+        print(f"  [Coarse] {actor.unique_name}: {param_name}={total} -> "
+              f"{uid} = {graph._params[uid].value}")

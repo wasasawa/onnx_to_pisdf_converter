@@ -695,6 +695,13 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
         fork = graph.create_actor(OpType.SPLIT_WEIGHTS, f"split_weights_{dtype_name}") 
         fork.add_param("sizeWeights", size_param)
 
+        # Stash the section layout for the block-drop pass: it fuses LOAD_WEIGHTS
+        # + this fork into one generated load+split actor whose kernel must know
+        # each weight's absolute file offset/size (bytes).  Ignored by the static
+        # graph emitter
+        fork.attributes["_section_dtype"]  = dtype_name        # e.g. "FLOAT"
+        fork.attributes["_weight_layout"]  = {}                # port_name -> {offset, size}
+
         # tensor representing the whole section as a fifo input
         section_tensor = graph.get_or_create_tensor(
             f"__weights_section_{dtype_name}__",
@@ -723,6 +730,12 @@ def add_weight_fork_actors(graph: IRGraph, model_data: dict, offset_map: dict):
 
             fork.add_output(port_name, tensor)
             fork_out_port = fork.get_port(port_name)
+
+            # Absolute file offset + byte size for the fused load+split kernel.
+            fork.attributes["_weight_layout"][port_name] = {
+                "offset": info["offset_in_file"],
+                "size":   info["size"],
+            }
 
             if len(consumers) <= 1:
                 # Simple case: zero or one consumer — direct single FIFO
@@ -1018,6 +1031,18 @@ def generate_xml(graph: IRGraph, model_data, loop_fn_override) -> str:
             "source":       param.unique_id,
             "target":       dst_actor,
             "targetport":   port.name,
+        })
+
+    # -------------------------------------------------------------------------
+    # Param -> param dependency edges (derived params, e.g. grain = f(X)).
+    # Populated by coarse_rates.coarsen_graph() as (source_uid, target_uid);
+    # target is a param node id, so there is no targetport.
+    # -------------------------------------------------------------------------
+    for src_uid, dst_uid in getattr(graph, "_param_deps", []):
+        SubElement(graph_el, "edge", attrib={
+            "kind":   "dependency",
+            "source": src_uid,
+            "target": dst_uid,
         })
 
     # -------------------------------------------------------------------------

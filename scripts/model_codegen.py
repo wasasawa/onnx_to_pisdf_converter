@@ -79,6 +79,14 @@ def generate_model_actors(graph: IRGraph, isHierarchial, model_name: str) -> dic
             declarations.append(codegen.decl(actor, params))
             definitions.append(codegen.defn(actor, params, parallel=is_parallel))
 
+            # Emit the keep-aware block-skip variant (residual ADD types only).
+            # block_skipping_pass.py repoints residual ADD actors at this
+            # `<base>_skip` function in dy_resnet_blockdrop.pi.
+            skip_definition = codegen.skip_defn(actor, params)
+            if skip_definition is not None:
+                declarations.append(codegen.skip_decl(actor, params))
+                definitions.append(skip_definition)
+
     # -----------------------------------------------------------------
     # Write header
     # -----------------------------------------------------------------
@@ -102,3 +110,82 @@ def generate_model_actors(graph: IRGraph, isHierarchial, model_name: str) -> dic
     print(f"  Generated {h_path}")
     print(f"  Generated {cpp_path}")
     return loop_fn_map
+
+
+def generate_weight_loader_actors(graph: IRGraph, model_name: str) -> None:
+    """
+    emit the fused load+split weight kernels for the dynamic
+    block-drop graph.
+
+    Runs *after* `block_skipping_pass.apply_block_skipping_pass`, which fuses
+    each gated ``LOAD_WEIGHTS + SPLIT_WEIGHTS`` pair into a single ``loadsplit``
+    actor carrying the per-weight file layout (`_weight_layout`) and which
+    outputs are gated (`_gated_outputs`).  For each such actor we emit one
+    self-contained function that reads every weight straight from the weights
+    file (inline ``fseek``/``fread`` — no dependency on the project's
+    ``loadWeights``) at its absolute byte offset, skipping dropped blocks:
+
+        void load_split_weights_float(int sizeWeights, int keep_0, ...,
+                                      float* out_0, float* out_1, ...) {
+            std::FILE* f = std::fopen("weights.bin", "rb");
+            if (!f) { ...; return; }
+            std::fseek(f, OFF0, SEEK_SET); std::fread(out_0, 1, SZ0, f);            // ungated
+            if (keep_0) { std::fseek(f, OFF1, SEEK_SET); std::fread(out_1, 1, SZ1, f); }
+            ...
+            std::fclose(f);
+        }
+
+    The file is opened once per firing (cheaper than the old per-weight
+    open/close).  Bodies are appended to the already-generated actor files; each
+    actor's `.source` is repointed at the generated header.  No-op when there
+    are no fused actors (e.g. a model with no residual blocks).
+    """
+    fused = [a for a in graph.actors if a.attributes.get("_kind") == "loadsplit"]
+    if not fused:
+        return
+
+    h_path   = os.path.join(GENERATED_DIR, f"{model_name}_actors.h")
+    cpp_path = os.path.join(GENERATED_DIR, f"{model_name}_actors.cpp")
+    header   = f"/Code/include/runtime/{model_name}_actors.h"
+
+    decls, defns = [], []
+    for actor in fused:
+        fn      = actor.attributes["_loop_fn"]
+        layout  = actor.attributes.get("_weight_layout", {})
+        gated   = actor.attributes.get("_gated_outputs", {})
+
+        sig_parts = [f"int {p.name}" for p, _ in actor.params]
+        for port, tensor in actor.outputs:
+            sig_parts.append(f"{tensor.dtype}* {port.name}")
+        sig = ", ".join(sig_parts)
+
+        body = [
+            '    std::FILE* f = std::fopen("weights.bin", "rb");',
+            f'    if (!f) {{ std::fprintf(stderr, "[{fn}] cannot open weights.bin\\n"); return; }}',
+        ]
+        for port, _ in actor.outputs:
+            info = layout.get(port.name)
+            if info is None:
+                continue   # output with no recorded layout — skip defensively
+            read = (f"std::fseek(f, {info['offset']}, SEEK_SET); "
+                    f"std::fread({port.name}, 1, {info['size']}, f);")
+            uid  = gated.get(port.name)
+            body.append(f"    if ({uid}) {{ {read} }}" if uid else f"    {read}")
+        body.append("    std::fclose(f);")
+
+        decls.append(f"void {fn}({sig});")
+        defns.append(f"void {fn}({sig})\n{{\n" + "\n".join(body) + "\n}")
+        actor.source = header
+
+    with open(h_path, "a") as f:
+        f.write("\n// --- Fused load+split weight loaders (dynamic block-drop) ---\n")
+        f.write("\n".join(decls))
+        f.write("\n")
+
+    with open(cpp_path, "a") as f:
+        f.write("\n// --- Fused load+split weight loaders (dynamic block-drop) ---\n")
+        f.write("#include <cstdio>\n\n")
+        f.write("\n\n".join(defns))
+        f.write("\n")
+
+    print(f"  Appended {len(fused)} fused load+split kernel(s) to {h_path} / {cpp_path}")

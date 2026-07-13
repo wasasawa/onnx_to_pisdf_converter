@@ -26,6 +26,49 @@ class ActorCodegen(ABC):
     def _base_name(self) -> str:
         return type(self).__name__.replace("Codegen", "").lower()
 
+    # -- Block-skip variant -------------------------------------------------
+    # Residual ADD actors are rewritten by block_skipping_pass.py to gate their
+    # compute-path input by a `keep` cfg param.  When keep == 0 the compute FIFO
+    # carries 0 tokens, so the kernel must not read it.  Codegens that support
+    # this emit a second `<base>_skip` function alongside the normal one.
+    # Default: no variant.
+
+    def skip_loop_fn(self, actor: IRActor) -> str:
+        return f"{self.loop_fn(actor)}_skip"
+
+    def skip_decl(self, actor: IRActor, params: dict) -> Optional[str]:
+        return None
+
+    def skip_defn(self, actor: IRActor, params: dict) -> Optional[str]:
+        return None
+
+    @staticmethod
+    def _skip_sig(actor: IRActor) -> str:
+        """Like _full_sig but with a trailing `int keep` cfg param.
+
+        block_skipping_pass.py appends the `keep` cfg port after the actor's
+        existing size params, and cfg params are always emitted before data
+        ports, so `keep` lands right after the size params in the loop param
+        order — matched here.
+        """
+        parts = [f"int {port.name}" for port, _ in actor.params]
+        parts.append("int keep")
+        for port, tensor in actor.inputs + actor.weights:
+            parts.append(f"{tensor.dtype}* {port.name}")
+        for port, tensor in actor.outputs:
+            parts.append(f"{tensor.dtype}* {port.name}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _call_args(actor: IRActor) -> str:
+        """Argument list to forward to the normal kernel (`_full_sig` minus keep)."""
+        names = [port.name for port, _ in actor.params]
+        for port, _ in actor.inputs + actor.weights:
+            names.append(port.name)
+        for port, _ in actor.outputs:
+            names.append(port.name)
+        return ", ".join(names)
+
     @staticmethod
     def _full_sig(actor: IRActor) -> str:
         """
@@ -664,6 +707,28 @@ void {fn}({sig})
 }}
 """
 
+    def skip_decl(self, actor, params):
+        return f"void {self.skip_loop_fn(actor)}({self._skip_sig(actor)});"
+
+    def skip_defn(self, actor, params):
+        fn   = self.skip_loop_fn(actor)
+        sig  = self._skip_sig(actor)
+        base = self.loop_fn(actor)
+        args = self._call_args(actor)
+        return f"""\
+void {fn}({sig})
+{{
+    // Residual block-skip: input_0 = skip path, input_1 = gated compute path.
+    if (keep) {{
+        // Block kept: reuse the oneDNN-backed {base} kernel (skip + compute).
+        {base}({args});
+    }} else {{
+        // Block dropped: the compute FIFO carries 0 tokens — forward skip only.
+        std::memcpy(output_0, input_0, size1 * sizeof(float));
+    }}
+}}
+"""
+
 
 class AddBiasCodegen(ActorCodegen):
     """Add where input_1 (bias) is smaller and broadcast cyclically."""
@@ -787,6 +852,28 @@ void {fn}({sig})
         for (int i = 0; i < size1; ++i) output_0[i] = input_0[i] + s;
     }} else {{
         for (int i = 0; i < size1; ++i) output_0[i] = input_0[i] + input_1[i % size2];
+    }}
+}}
+"""
+
+    def skip_decl(self, actor, params):
+        return f"void {self.skip_loop_fn(actor)}({self._skip_sig(actor)});"
+
+    def skip_defn(self, actor, params):
+        fn   = self.skip_loop_fn(actor)
+        sig  = self._skip_sig(actor)
+        base = self.loop_fn(actor)
+        args = self._call_args(actor)
+        return f"""\
+void {fn}({sig})
+{{
+    // Residual block-skip: input_0 = skip path, input_1 = gated compute path.
+    if (keep) {{
+        // Block kept: reuse the {base} kernel (residual operands are equal-size).
+        {base}({args});
+    }} else {{
+        // Block dropped: the compute FIFO carries 0 tokens — forward skip only.
+        std::memcpy(output_0, input_0, size1 * sizeof(float));
     }}
 }}
 """

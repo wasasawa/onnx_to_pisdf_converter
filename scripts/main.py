@@ -28,6 +28,12 @@ def main(model_path, isHierarchial = 0, isGeneratedKernels = 1,output_xml="", ou
 
     n = apply_block_skipping_pass(graph)               # in-place, returns block count
     print(f"Applied BlockDrop pass: {n} residual blocks detected and transformed.")
+
+    # Approach A: emit the fused load+split weight kernels created by the pass
+    # (only the dynamic graph; the static .pi already written above is untouched).
+    if isGeneratedKernels:
+        generate_weight_loader_actors(graph, graph_name)
+
     write_block_skipping_xml(graph, model_data, "../output_graphs/dy_resnet_blockdrop.pi")
 
     if isHierarchial:

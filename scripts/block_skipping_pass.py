@@ -9,7 +9,7 @@ from xml.dom.minidom import parseString
 
 from structure import (
     IRGraph, IRActor, IRPort, IRTensor, IRParam,
-    OpType, PortDir, OPTYPE_TO_H, OPTYPE_TO_LOOP_FN
+    OpType, OPTYPE_TO_H, OPTYPE_TO_LOOP_FN
 )
 
 
@@ -20,11 +20,6 @@ from structure import (
 def _mul(base_rate, param_name: str) -> str:
     """e.g. (16384, 'keep_0') → '16384*keep_0'"""
     return f"{base_rate}*{param_name}"
-
-
-def _inv(base_rate, param_name: str) -> str:
-    """e.g. (16384, 'keep_0') → '16384*(1-keep_0)'"""
-    return f"{base_rate}*(1-{param_name})"
 
 
 # ===========================================================================
@@ -525,192 +520,151 @@ def _modify_compute_actor_data_rates(actor: IRActor, keep_param: IRParam) -> Non
 
 
 # ===========================================================================
-# 10.  STEP 3 — WEIGHT GATE INSERTION
+# 10.  STEP 3 — GATE THE WEIGHT EDGE AT ITS SPLIT_WEIGHTS SOURCE
 # ===========================================================================
 
-def _insert_weight_gate(
+def _gate_split_output(
     graph        : IRGraph,
     compute_actor: IRActor,
     weight_idx   : int,
     keep_param   : IRParam,
-    label        : str,
 ) -> None:
     """
-    Insert a Gate_Weights fork and a Sink actor for one weight FIFO.
-
-    Gate_Weights is a Preesm *fork* (one input, two outputs at different
-    rates summing to the input rate), not a broadcast.
+    Gate one weight FIFO by ``keep`` directly at its producing SPLIT_WEIGHTS
+    output — no Gate_Weights fork and no Sink actor.
 
     Before:
-        source ──[weight_tensor]──► compute_actor.weight_port  (rate W)
+        SPLIT_WEIGHTS.out_i ──[W]──► compute_actor.weight_port   (rate W)
 
     After:
-        source ──[weight_tensor]──► Gate_Weights.weight_in     (rate W)
-            Gate_Weights.to_conv      (W * keep)  ──► compute_actor.weight_port
-            Gate_Weights.discarded (W*(1-keep))   ──► Sink.input
+        SPLIT_WEIGHTS.out_i ──[W*keep_n]──► compute_actor.weight_port (rate W*keep)
+
+    When keep == 0 the edge carries 0 tokens, so the fused load+split kernel
+    (see `_fuse_load_split` + `model_codegen.generate_weight_loader_actors`)
+    simply doesn't load that slice.  The split actor accumulates one cfg port
+    per block whose weights it feeds; we use the param's *unique_id* as the
+    local port name (like BROADCAST) so multiple blocks coexist on one actor.
+
+    The compute actor already owns a ``keep`` cfg port (added by
+    `_modify_compute_actor_data_rates`), so the consumer side is gated with
+    that local name; the producer side uses the split's per-block ``keep_n``.
     """
     weight_port, weight_tensor = compute_actor.weights[weight_idx]
-    W     = weight_tensor.size   # always the original static size
-    pname = keep_param.name
-    dtype = weight_tensor.dtype
+    split_out_port = weight_tensor.producer
+    if split_out_port is None or split_out_port.actor is None:
+        return   # shared weight routed via a broadcast — leave ungated
+    split_actor = split_out_port.actor
+    if split_actor.op_type != OpType.SPLIT_WEIGHTS:
+        return   # only direct fork outputs are fused/gated
 
-    # ── Gate_Weights fork ─────────────────────────────────────────────────
-    gate_name  = f"Gate_{label}"
-    gate_actor = IRActor(
-        name=gate_name, op_type=OpType.FORK,
-        unique_name=gate_name, source="",
-        attributes={"_kind": "gate"},
-    )
-    graph._actors[gate_name] = gate_actor
-    _add_cfg_port(gate_actor, keep_param)
+    uid = keep_param.unique_id            # split-local port name, e.g. "keep_0"
 
-    gate_in_port = IRPort(name="weight_in", direction=PortDir.IN,
-                          rate=W, actor=gate_actor)
-    gate_actor.inputs.append((gate_in_port, weight_tensor))
+    # Consumer side: conv's own "keep" port (already present).
+    weight_port.rate = _mul(weight_port.rate, keep_param.name)
+    # Producer side: split's per-block "keep_n" port.
+    split_out_port.rate = _mul(split_out_port.rate, uid)
 
-    gated_tensor = graph.create_tensor(
-        name=f"{weight_tensor.name}_gated_{label}",
-        shape=weight_tensor.shape, dtype=dtype,
-    )
-    to_conv_port = IRPort(name="to_conv", direction=PortDir.OUT,
-                          rate=_mul(W, pname), actor=gate_actor)
-    gate_actor.outputs.append((to_conv_port, gated_tensor))
-    graph.link(gated_tensor, to_conv_port, None)
+    if not any(p.name == uid for p, _ in split_actor.params):
+        split_actor.add_param(uid, keep_param)
 
-    discard_tensor = graph.create_tensor(
-        name=f"{weight_tensor.name}_discard_{label}",
-        shape=weight_tensor.shape, dtype=dtype,
-    )
-    discard_port = IRPort(name="discarded", direction=PortDir.OUT,
-                          rate=_inv(W, pname), actor=gate_actor)
-    gate_actor.outputs.append((discard_port, discard_tensor))
-    graph.link(discard_tensor, discard_port, None)
-
-    # ── Rewire: weight_tensor → gate_actor, not directly to compute_actor ─
-    if weight_port in weight_tensor.consumers:
-        weight_tensor.consumers.remove(weight_port)
-    graph.link(weight_tensor, None, gate_in_port)
-
-    compute_actor.weights[weight_idx] = (weight_port, gated_tensor)
-    weight_port.rate = _mul(W, pname)
-    graph.link(gated_tensor, None, weight_port)
-
-    # ── Sink actor ────────────────────────────────────────────────────────
-    sink_name  = f"Sink_{label}"
-    sink_actor = IRActor(
-        name=sink_name, op_type=OpType.SINK,
-        unique_name=sink_name, source="Code/include/utilities.h",
-        attributes={"_kind": "sink", "_loop_fn": "sink"},
-    )
-    graph._actors[sink_name] = sink_actor
-    _add_cfg_port(sink_actor, keep_param)
-
-    sink_in_port = IRPort(name="input", direction=PortDir.IN,
-                          rate=_inv(W, pname), actor=sink_actor)
-    sink_actor.inputs.append((sink_in_port, discard_tensor))
-    graph.link(discard_tensor, None, sink_in_port)
+    # Record which output is gated by which keep, for the codegen step.
+    split_actor.attributes.setdefault("_gated_outputs", {})[split_out_port.name] = uid
 
 
 # ===========================================================================
-# 11.  STEP 4 — ZERO + SELECT (JOIN) ACTORS
+# 10.5  FUSE LOAD_WEIGHTS + SPLIT_WEIGHTS → ONE LOAD+SPLIT ACTOR (dynamic only)
 # ===========================================================================
 
-def _insert_zero_and_select(
+def _fuse_load_split(graph: IRGraph) -> None:
+    """
+    Collapse every gated ``LOAD_WEIGHTS → SPLIT_WEIGHTS`` pair into a single
+    generated ``loadsplit`` actor that loads each weight straight from the file
+    and only emits the slices of kept blocks.
+
+    Runs after all blocks are transformed, so a split actor is "gated" iff it
+    picked up ``_gated_outputs`` in `_gate_split_output`.  The static graph was
+    already written by `converter.write_xml`, so this only affects the dynamic
+    ``dy_resnet_blockdrop.pi``.
+    """
+    for split_actor in list(graph.actors):
+        if split_actor.op_type != OpType.SPLIT_WEIGHTS:
+            continue
+        if "_gated_outputs" not in split_actor.attributes:
+            continue   # section with no residual weights — leave as a fork
+
+        # The LOAD_WEIGHTS feeding this fork, via its single section input.
+        load_actor = None
+        for in_port, section_tensor in split_actor.inputs:
+            if section_tensor.producer is not None:
+                load_actor = section_tensor.producer.actor
+            # Detach the section FIFO so no dangling edge is emitted.
+            section_tensor.producer = None
+            section_tensor.consumers.clear()
+        split_actor.inputs.clear()
+
+        if load_actor is not None and load_actor.op_type == OpType.LOAD_WEIGHTS:
+            graph._actors.pop(load_actor.unique_name, None)
+
+        # Promote the fork into a generated load+split actor.  The kernel name
+        # is derived from the section dtype; codegen emits the matching body.
+        dtype_lower = split_actor.attributes.get("_section_dtype", "float").lower()
+        split_actor.attributes["_kind"]    = "loadsplit"
+        split_actor.attributes["_loop_fn"] = f"load_split_weights_{dtype_lower}"
+
+
+# ===========================================================================
+# 11.  STEP 4 — KEEP-AWARE ADD (replaces ZERO + SELECT)
+# ===========================================================================
+
+def _modify_add_actor(
     graph      : IRGraph,
     block      : ResidualBlock,
     keep_param : IRParam,
-    block_idx  : int,
 ) -> None:
     """
-    Insert a Zero actor and a Select (join) actor before ADD's compute input.
+    Make the residual ADD itself block-skip aware instead of inserting Zero
+    and Select (join) actors.
 
-        Zero.output   (S*(1-keep)) ──► Select.zero
-        compute_last  (S*keep)     ──► Select.b_output
-        Select.output (S, static)  ──► ADD.compute_input  [ADD unchanged]
+    A PiSDF actor may have a FIFO whose rate evaluates to 0, provided its
+    loop function does not touch that port when the rate is 0.  We exploit
+    this: the compute-path result flows straight into ADD's compute input at
+    rate ``S*keep``, and ADD receives ``keep`` as a cfg_input.
 
-    When keep=1: Zero produces 0 tokens; Select forwards S compute tokens.
-    When keep=0: Zero produces S tokens; Select forwards S zeros; ADD
-                 effectively passes the skip path straight through.
+        compute_last ──[S*keep]──► ADD.input_1   (gated compute path)
+        skip         ──[S]─────► ADD.input_0   (skip path, always present)
+        ADD          ──[S]─────► downstream
+
+    The generated loop function ``<add>_skip`` checks ``keep``:
+      keep == 1 → output = skip + compute   (both FIFOs carry S tokens)
+      keep == 0 → output = skip             (compute FIFO carries 0 tokens,
+                                             so it is never read)
+
+    No Zero/Select actors and no extra FIFOs are created — the compute result
+    tensor already feeds ADD's compute port; we only adjust rates, append the
+    ``keep`` cfg port, order the inputs (skip first, compute last) and repoint
+    the loop function at the keep-aware variant.
     """
-    pname = keep_param.name
-    S     = block.block_output_size
-    dtype = block.compute_result_tensor.dtype
+    add_actor    = block.add_actor
+    compute_port = block.add_compute_port
+    skip_port    = next(p for p, _ in add_actor.inputs if p is not compute_port)
 
-    # ── Zero actor ────────────────────────────────────────────────────────
-    zero_name  = f"zero_block{block_idx}"
-    zero_actor = IRActor(
-        name=zero_name, op_type=OpType.ZERO,
-        unique_name=zero_name, source="Code/include/utilities.h",
-        attributes={"_kind": "zero", "_loop_fn": "zero"},
-    )
-    graph._actors[zero_name] = zero_actor
-    _add_cfg_port(zero_actor, keep_param)
+    # Gate the compute-path input rate by keep; skip input and output stay S.
+    compute_port.rate = _mul(compute_port.rate, keep_param.name)
 
-    # Add size parameter to Zero actor
-    size_param = IRParam(name=f"size", value=S, unique_id=f"size_{S}")
-    if f"size_{S}" not in graph._params:
-        graph._params[f"size_{S}"] = size_param
-    _add_cfg_port(zero_actor, size_param)
-    
-    zero_tensor = graph.create_tensor(
-        name=f"zero_tensor_block{block_idx}",
-        shape=block.compute_result_tensor.shape, dtype=dtype,
-    )
-    zero_out = IRPort(name="output", direction=PortDir.OUT,
-                      rate=_inv(S, pname), actor=zero_actor)
-    zero_actor.outputs.append((zero_out, zero_tensor))
-    graph.link(zero_tensor, zero_out, None)
+    # Name + order the ports to match the generated <add>_skip signature:
+    # input_0 = skip path (always S tokens, forwarded when keep == 0),
+    # input_1 = gated compute path (S*keep tokens).
+    skip_port.name    = "input_0"
+    compute_port.name = "input_1"
+    add_actor.inputs.sort(key=lambda pt: pt[0] is compute_port)
 
-    # ── Select (join) actor ───────────────────────────────────────────────
-    select_name  = f"select_block{block_idx}"
-    select_actor = IRActor(
-        name=select_name, op_type=OpType.JOIN,
-        unique_name=select_name, source="",
-        attributes={"_kind": "select"},   # emitted as kind="join" in XML
-    )
-    graph._actors[select_name] = select_actor
-    _add_cfg_port(select_actor, keep_param)
+    # keep is appended after the existing size params, matching the order the
+    # generated <add>_skip signature expects (cfg params, then keep).
+    _add_cfg_port(add_actor, keep_param)
 
-    # Input "zero" ← Zero actor
-    sel_zero_port = IRPort(name="zero", direction=PortDir.IN,
-                           rate=_inv(S, pname), actor=select_actor)
-    select_actor.inputs.append((sel_zero_port, zero_tensor))
-    graph.link(zero_tensor, None, sel_zero_port)
-
-    # Input "b_output" ← compute result tensor (currently feeding ADD)
-    compute_result   = block.compute_result_tensor
-    add_compute_port = block.add_compute_port
-
-    sel_b_port = IRPort(name="b_output", direction=PortDir.IN,
-                        rate=_mul(S, pname), actor=select_actor)
-    select_actor.inputs.append((sel_b_port, compute_result))
-
-    # Remove ADD's compute port from compute_result's consumers; replace
-    # with select's input port.
-    if add_compute_port in compute_result.consumers:
-        compute_result.consumers.remove(add_compute_port)
-    graph.link(compute_result, None, sel_b_port)
-
-    # Output of select → new tensor → ADD's compute input (static rate S)
-    select_out_tensor = graph.create_tensor(
-        name=f"select_out_block{block_idx}",
-        shape=block.compute_result_tensor.shape, dtype=dtype,
-    )
-    sel_out_port = IRPort(name="output", direction=PortDir.OUT,
-                          rate=S, actor=select_actor)
-    select_actor.outputs.append((sel_out_port, select_out_tensor))
-    graph.link(select_out_tensor, sel_out_port, None)
-
-    # Redirect ADD's compute input port to consume select_out_tensor.
-    # Match by port identity — tensor references in actor.inputs may be stale.
-    add_actor = block.add_actor
-    for i, (p, _) in enumerate(add_actor.inputs):
-        if p is add_compute_port:
-            add_actor.inputs[i] = (p, select_out_tensor)
-            break
-
-    add_compute_port.rate = S   # remains static
-    graph.link(select_out_tensor, None, add_compute_port)
+    # Repoint the loop function at the keep-aware variant emitted by codegen.
+    base = OPTYPE_TO_LOOP_FN.get(add_actor.op_type, "")
+    add_actor.attributes["_loop_fn"] = f"{base}_skip"
 
 
 # ===========================================================================
@@ -728,19 +682,16 @@ def _transform_block(
     # Step 1 — Broadcast: scale compute-path output rate
     _modify_broadcast(block, keep_param)
 
-    # Steps 2 & 3 — Compute actors: data rates + weight gates
-    gate_counter = 0
+    # Steps 2 & 3 — Compute actors: data rates + gate each weight at its source
     for actor in block.compute_actors:
         _modify_compute_actor_data_rates(actor, keep_param)
         for w_idx in range(len(actor.weights)):
             _, wt = actor.weights[w_idx]
             if wt.producer is not None:   # only gate weights with a source actor
-                label = f"{actor.unique_name}_w{w_idx}_{gate_counter}"
-                _insert_weight_gate(graph, actor, w_idx, keep_param, label)
-                gate_counter += 1
+                _gate_split_output(graph, actor, w_idx, keep_param)
 
-    # Step 4 — Zero + Select before ADD
-    _insert_zero_and_select(graph, block, keep_param, block_idx)
+    # Step 4 — Make the ADD itself keep-aware (no Zero/Select actors)
+    _modify_add_actor(graph, block, keep_param)
 
     return keep_param
 
@@ -821,6 +772,10 @@ def apply_block_skipping_pass(graph: IRGraph) -> int:
             f"param='{keep.unique_id}'  compute={compute_names}"
         )
 
+    # Collapse gated LOAD_WEIGHTS + SPLIT_WEIGHTS pairs into fused load+split
+    # actors (eliminates the per-weight gate/sink actors entirely).
+    _fuse_load_split(graph)
+
     _insert_policy_network(graph, keep_params)
     print(f"[BlockSkipping] Inserted policyNetwork actor "
           f"(controls: {[p.unique_id for p in keep_params]}).")
@@ -833,16 +788,11 @@ def apply_block_skipping_pass(graph: IRGraph) -> int:
 # ===========================================================================
 
 # Mapping from the internal _kind attribute to the Preesm XML kind string.
-# Gate_Weights actors are Preesm forks (split data).
-# Zero and Sink actors are plain Preesm actors.
-# Select actors are Preesm joins.
+# loadsplit is the fused load+split weight actor (a plain generated actor).
 # policyNetwork is a plain Preesm actor with cfg_output ports.
 _SPECIAL_KIND_TO_XML_KIND: dict[str, str] = {
-    "gate"  : "fork",
-    "sink"  : "actor",
-    "zero"  : "actor",
-    "select": "join",
-    "policy": "actor",
+    "loadsplit": "actor",
+    "policy"   : "actor",
 }
 
 
@@ -960,7 +910,10 @@ def _generate_actor_node(graph_el: Element, actor: IRActor) -> None:
         kind = "join"
     else:
         kind = "actor"
-    _emit_node(graph_el, actor, kind, OPTYPE_TO_LOOP_FN.get(actor.op_type, ""))
+    # A residual ADD carries an explicit _loop_fn (its keep-aware variant);
+    # everything else uses the default loop function for its op type.
+    loop_fn = actor.attributes.get("_loop_fn") or OPTYPE_TO_LOOP_FN.get(actor.op_type, "")
+    _emit_node(graph_el, actor, kind, loop_fn)
 
 
 def _emit_policy_dependency_edges(graph_el: Element, graph: IRGraph) -> None:
@@ -1019,6 +972,13 @@ def generate_block_skipping_xml(graph: IRGraph, model_data: dict) -> str:
             "kind":       "dependency",
             "source":     param.unique_id,
             "target":     dst_actor, "targetport": port.name,
+        })
+
+    # Param -> param dependency edges (derived params, e.g. grain = f(X)),
+    # populated by coarse_rates.coarsen_graph(). Target is a param id (no port).
+    for src_uid, dst_uid in getattr(graph, "_param_deps", []):
+        SubElement(graph_el, "edge", attrib={
+            "kind": "dependency", "source": src_uid, "target": dst_uid,
         })
 
     # Emit policyNetwork → keep_<N> dependency edges after all standard edges.
